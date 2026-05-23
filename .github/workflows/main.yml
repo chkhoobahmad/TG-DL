@@ -68,9 +68,8 @@ jobs:
       - name: Install dependencies
         run: |
           npm install telegram
-          npm install input
           sudo apt-get update
-          sudo apt-get install -y zip curl bc
+          sudo apt-get install -y zip curl bc file
 
       - name: Configure Git for Large Files
         run: |
@@ -102,17 +101,10 @@ jobs:
           const stringSession = process.env.STRING_SESSION;
           const postUrl = process.env.POST_URL;
 
-          // حد تقسیم فایل: 45 مگابایت
-          const SPLIT_THRESHOLD_BYTES = 45 * 1024 * 1024;
-
           async function extractChatAndMsgId(url) {
-            // پشتیبانی از فرمت‌های مختلف لینک تلگرام
-            // https://t.me/username/123
-            // https://t.me/c/123456789/123
             const patterns = [
               /https?:\/\/t\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
               /https?:\/\/telegram\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
-              /https?:\/\/t\.me\/([^\/]+)\/(\d+)/,
             ];
             
             let match = null;
@@ -128,7 +120,6 @@ jobs:
             let chatId = match[1];
             const msgId = parseInt(match[2]);
             
-            // تبدیل chatId به فرمت مناسب برای Telegram API
             if (chatId === 'c' || chatId.startsWith('c/')) {
               chatId = '-100' + chatId.replace('c/', '').replace('c', '');
             } else if (!isNaN(parseInt(chatId)) && chatId.length > 5) {
@@ -149,7 +140,6 @@ jobs:
             console.log('Downloading media from Telegram...');
             
             try {
-              // دانلود مدیا با استفاده از GramJS
               const filePath = await message.downloadMedia({
                 outputFile: path.join(outputDir, 'telegram_download'),
                 progressCallback: (downloaded, total) => {
@@ -158,13 +148,13 @@ jobs:
                 }
               });
               
-              console.log(); // خط جدید بعد از progress bar
+              console.log();
               
               if (filePath && fs.existsSync(filePath)) {
                 const stats = fs.statSync(filePath);
                 if (stats.size > 0) {
-                  // تشخیص نام فایل اصلی اگر وجود داشته باشد
-                  let finalFileName = 'downloaded_file';
+                  let finalFileName = null;
+                  
                   if (message.media.document && message.media.document.attributes) {
                     for (const attr of message.media.document.attributes) {
                       if (attr.className === 'DocumentAttributeFilename') {
@@ -174,38 +164,27 @@ jobs:
                     }
                   }
                   
-                  // اگر نام فایل تشخیص داده شد، فایل را rename کن
-                  if (finalFileName !== 'downloaded_file') {
+                  if (!finalFileName) {
+                    const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
+                    const extMap = {
+                      'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+                      'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
+                      'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+                      'application/pdf': '.pdf', 'application/zip': '.zip',
+                      'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
+                    };
+                    const ext = extMap[fileType] || '';
+                    finalFileName = ext ? `downloaded_file${ext}` : null;
+                  }
+                  
+                  if (finalFileName) {
                     const newPath = path.join(outputDir, finalFileName);
                     fs.renameSync(filePath, newPath);
                     downloadedFiles.push(newPath);
                     console.log(`✅ Downloaded: ${finalFileName} (${(stats.size/1024/1024).toFixed(2)}MB)`);
                   } else {
-                    // تشخیص نوع فایل از روی محتوا
-                    const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
-                    let extension = '';
-                    switch(fileType) {
-                      case 'video/mp4': extension = '.mp4'; break;
-                      case 'video/x-matroska': extension = '.mkv'; break;
-                      case 'audio/mpeg': extension = '.mp3'; break;
-                      case 'audio/mp4': extension = '.m4a'; break;
-                      case 'image/jpeg': extension = '.jpg'; break;
-                      case 'image/png': extension = '.png'; break;
-                      case 'application/pdf': extension = '.pdf'; break;
-                      case 'application/zip': extension = '.zip'; break;
-                      case 'application/x-rar': extension = '.rar'; break;
-                      default: extension = '';
-                    }
-                    
-                    if (extension) {
-                      const newPath = path.join(outputDir, `downloaded_file${extension}`);
-                      fs.renameSync(filePath, newPath);
-                      downloadedFiles.push(newPath);
-                      console.log(`✅ Downloaded: downloaded_file${extension} (${(stats.size/1024/1024).toFixed(2)}MB)`);
-                    } else {
-                      downloadedFiles.push(filePath);
-                      console.log(`✅ Downloaded: ${path.basename(filePath)} (${(stats.size/1024/1024).toFixed(2)}MB)`);
-                    }
+                    downloadedFiles.push(filePath);
+                    console.log(`✅ Downloaded: ${path.basename(filePath)} (${(stats.size/1024/1024).toFixed(2)}MB)`);
                   }
                 }
               }
@@ -238,7 +217,6 @@ jobs:
               const { chatId, msgId } = await extractChatAndMsgId(postUrl);
               console.log(`📨 Fetching message from chat: ${chatId}, message ID: ${msgId}`);
               
-              // دریافت انجمن (chat)
               let chat;
               if (chatId.toString().startsWith('-100')) {
                 chat = await client.getEntity(parseInt(chatId));
@@ -246,7 +224,6 @@ jobs:
                 chat = await client.getEntity(chatId);
               }
               
-              // دریافت پیام
               const messages = await client.getMessages(chat, { ids: msgId });
               const message = messages[0];
               
@@ -256,19 +233,16 @@ jobs:
               
               console.log('✅ Message found!');
               
-              // ایجاد دایرکتوری برای ذخیره فایل‌ها
               const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
               const downloadsDir = path.join('/tmp', `telegram_${timestamp}`);
               fs.mkdirSync(downloadsDir, { recursive: true });
               
-              // ذخیره متن پیام
               if (message.text && message.text.length > 0) {
                 const textFile = path.join(downloadsDir, 'message_text.txt');
                 fs.writeFileSync(textFile, message.text);
                 console.log(`📝 Saved message text (${message.text.length} characters)`);
               }
               
-              // دانلود مدیا
               const downloadedFiles = await downloadAllMedia(message, downloadsDir);
               
               if (downloadedFiles.length === 0) {
@@ -286,24 +260,20 @@ jobs:
                 console.log(`💾 Saved post info to ${infoFile}`);
               }
               
-              // ذخیره لیست فایل‌های دانلود شده
-              const filesList = path.join('/tmp', 'downloaded_files.txt');
+              const filesList = '/tmp/downloaded_files.txt';
               const allFiles = [];
               
-              // اضافه کردن فایل‌های دانلود شده
               for (const file of downloadedFiles) {
                 if (fs.existsSync(file) && fs.statSync(file).size > 0) {
                   allFiles.push(file);
                 }
               }
               
-              // اضافه کردن فایل متن اگر وجود دارد
               const textFile = path.join(downloadsDir, 'message_text.txt');
               if (fs.existsSync(textFile) && fs.statSync(textFile).size > 0) {
                 allFiles.push(textFile);
               }
               
-              // اضافه کردن فایل info اگر وجود دارد
               const infoFile = path.join(downloadsDir, 'post_info.json');
               if (fs.existsSync(infoFile) && fs.statSync(infoFile).size > 0) {
                 allFiles.push(infoFile);
@@ -315,12 +285,17 @@ jobs:
               console.log(`   - Total files: ${allFiles.length}`);
               console.log(`   - Total size: ${(allFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0) / 1024 / 1024).toFixed(2)}MB`);
               
+              // Write output for next step
+              const outputFile = process.env.GITHUB_OUTPUT;
+              if (outputFile) {
+                fs.appendFileSync(outputFile, `BASE_DIR=${downloadsDir}\n`);
+              } else {
+                // Fallback: write to a file that can be read later
+                fs.writeFileSync('/tmp/base_dir.txt', downloadsDir);
+              }
+              
               await client.disconnect();
               console.log('👋 Disconnected from Telegram');
-              
-              // خروجی برای step بعدی
-              const fs = require('fs');
-              fs.writeFileSync(process.env.GITHUB_OUTPUT, `BASE_DIR=${downloadsDir}\n`, { flag: 'a' });
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -336,8 +311,9 @@ jobs:
       - name: Get base directory
         id: get_dir
         run: |
-          BASE_DIR=$(cat /tmp/telegram_* 2>/dev/null | head -1 || echo "")
-          if [ -z "$BASE_DIR" ]; then
+          if [ -f "/tmp/base_dir.txt" ]; then
+            BASE_DIR=$(cat /tmp/base_dir.txt)
+          else
             BASE_DIR=$(ls -td /tmp/telegram_* 2>/dev/null | head -1)
           fi
           echo "BASE_DIR=${BASE_DIR}" >> $GITHUB_OUTPUT
@@ -366,21 +342,16 @@ jobs:
           }
 
           get_unique_folder() {
-            local BASE_PATH="$1"
-            local NAME="$2"
             local TIMESTAMP=$(date +%s)
             local RANDOM=$((RANDOM % 10000))
-            echo "${NAME}_${TIMESTAMP}_${RANDOM}"
+            echo "telegram_${TIMESTAMP}_${RANDOM}"
           }
 
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          FOLDER_NAME="telegram_${TIMESTAMP}"
-          FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$FOLDER_NAME")
+          FOLDER_NAME=$(get_unique_folder)
           mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
 
           echo "📦 Creating archive in folder: $BACKUP_DIR/$FOLDER_NAME"
 
-          # خواندن لیست فایل‌ها
           FILES_LIST="/tmp/downloaded_files.txt"
           VALID_FILES=()
           
@@ -388,7 +359,8 @@ jobs:
             while IFS= read -r FILE; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 VALID_FILES+=("$FILE")
-                echo "   Added to archive: $(basename "$FILE") ($(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}'))"
+                SIZE_MB=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
+                echo "   Added: $(basename "$FILE") (${SIZE_MB})"
               fi
             done < "$FILES_LIST"
           fi
@@ -398,30 +370,26 @@ jobs:
             exit 1
           fi
 
-          # ایجاد زیپ
           TEMP_ZIP_DIR="$BACKUP_DIR/$FOLDER_NAME/temp_files"
           mkdir -p "$TEMP_ZIP_DIR"
 
           for FILE in "${VALID_FILES[@]}"; do
             ORIGINAL_NAME=$(basename "$FILE")
-            # حذف کاراکترهای غیرمجاز
             SAFE_NAME=$(echo "$ORIGINAL_NAME" | sed 's/[<>:"|?*]/_/g')
             cp "$FILE" "$TEMP_ZIP_DIR/$SAFE_NAME"
           done
 
-          ARCHIVE_NAME="telegram_download_${TIMESTAMP}"
+          ARCHIVE_NAME="telegram_download"
           ARCHIVE_PATH="$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip"
           
           cd "$TEMP_ZIP_DIR"
           
-          # ایجاد زیپ با قابلیت اسپلیت خودکار در 45 مگابایت
           echo "📀 Creating split archive (${SPLIT_SIZE_MB}MB per part)..."
-          zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_PATH}" ./*
+          zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_PATH}" ./* 2>/dev/null
           
           cd - > /dev/null
           rm -rf "$TEMP_ZIP_DIR"
 
-          # ساخت README.md
           FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
           DOWNLOAD_LINKS_MD=""
           LINK_NUM=0
@@ -441,7 +409,6 @@ jobs:
           TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
           POST_URL="${{ github.event.inputs.post_url }}"
           
-          # بازسازی لینک‌های دانلود
           for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
             [ -f "$part_file" ] || continue
             PART_BASENAME=$(basename "$part_file")
@@ -452,7 +419,7 @@ jobs:
           done
 
           {
-            echo "# 📥 Telegram Download - ${TIMESTAMP}"
+            echo "# 📥 Telegram Download"
             echo ""
             echo "---"
             echo ""
@@ -461,10 +428,9 @@ jobs:
             echo "| Property | Value |"
             echo "|----------|-------|"
             echo "| **Source** | [${POST_URL}](${POST_URL}) |"
-            echo "| **Archive Name** | \`${ARCHIVE_NAME}.zip\` |"
             echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
             echo "| **Split Size** | ${SPLIT_SIZE_MB} MB per part |"
-            echo "| **Status** | ✅ **Complete (100%)** |"
+            echo "| **Status** | ✅ **Complete** |"
             echo ""
             echo "---"
             echo ""
@@ -479,22 +445,16 @@ jobs:
             echo "## 📖 How to Extract"
             echo ""
             echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
-            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with:"
-            echo "   - WinRAR"
-            echo "   - 7-Zip"
-            echo "   - Ark (Linux)"
-            echo "   - Any standard zip tool"
+            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip"
             echo "3. **Extract** — all parts combine automatically"
             echo ""
             echo "---"
             echo ""
-            echo "*🛠️ This tool created by [avasam.ir](https://avasam.ir)*"
+            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
           } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
 
           echo ""
-          echo "✅ Archive created successfully!"
-          echo "   Total parts: ${LINK_NUM}"
-          echo "   Total size: ${TOTAL_ARCHIVE_SIZE_MB}MB"
+          echo "✅ Archive created! Total parts: ${LINK_NUM}, Size: ${TOTAL_ARCHIVE_SIZE_MB}MB"
 
       - name: Update README.md with download links
         run: |
@@ -523,13 +483,11 @@ jobs:
           {
             echo "# 📥 Downloads from Telegram"
             echo ""
-            echo "This folder contains files downloaded from Telegram posts."
-            echo ""
             echo "---"
             echo ""
             echo "## 📁 Available Downloads"
             echo ""
-            echo "$FOLDERS" | while read -r FOLDER; do
+            for FOLDER in $FOLDERS; do
               if [ -n "$FOLDER" ]; then
                 FOLDER_ENCODED=$(urlencode "${FOLDER}")
                 echo "- [${FOLDER}](./${FOLDER_ENCODED})"
@@ -538,25 +496,19 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            echo "*🛠️ This tool created by [avasam.ir](https://avasam.ir)*"
+            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
           } > "downloads/README.md"
-
-          echo "✅ downloads/README.md created with list of downloaded files"
 
           SECTION_TITLE="📥 دانلود‌های تلگرام"
 
           if [ ! -f "README.md" ]; then
             echo "# AVASAM Telegram Downloader" > README.md
             echo "" >> README.md
-            echo "دانلود خودکار فایل‌های تلگرام و آپلود در گیت‌هاب" >> README.md
-            echo "" >> README.md
             echo "---" >> README.md
-            echo "" >> README.md
           fi
 
           if grep -q "$SECTION_TITLE" README.md; then
             sed -i "/$SECTION_TITLE/,/^---$/d" README.md
-            sed -i '${/^$/d;}' README.md
           fi
 
           {
@@ -566,18 +518,16 @@ jobs:
             echo "## $SECTION_TITLE"
             echo ""
             COUNTER=1
-            echo "$FOLDERS" | while read -r FOLDER; do
+            for FOLDER in $FOLDERS; do
               if [ -n "$FOLDER" ]; then
                 FOLDER_ENCODED=$(urlencode "${FOLDER}")
                 echo "${COUNTER}. [${FOLDER}]($REPO_URL/$FOLDER_ENCODED)"
-                echo ""
                 COUNTER=$((COUNTER + 1))
               fi
             done
+            echo ""
             echo "---"
           } >> README.md
-
-          echo "✅ README.md updated with download links"
 
       - name: Commit & Push
         run: |
@@ -592,8 +542,8 @@ jobs:
             exit 0
           fi
 
-          git fetch origin "$BRANCH"
-          git reset --hard origin/"$BRANCH"
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          git reset --hard origin/"$BRANCH" 2>/dev/null || true
 
           mkdir -p downloads
           cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
@@ -604,18 +554,15 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "Download from Telegram post [skip ci]"
             
-            PUSH_RETRY=0
-            while [ $PUSH_RETRY -lt 10 ]; do
-              PUSH_RETRY=$((PUSH_RETRY + 1))
-              if timeout 300 git push origin HEAD:"$BRANCH"; then
+            for i in {1..5}; do
+              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
                 echo "✅ Push successful!"
                 break
               else
-                echo "Push failed, retry $PUSH_RETRY/10..."
-                sleep $((3 + RANDOM % 7))
-                git fetch origin "$BRANCH"
-                git reset --hard origin/"$BRANCH"
-                mkdir -p downloads
+                echo "Push failed, retry $i/5..."
+                sleep 5
+                git fetch origin "$BRANCH" 2>/dev/null || true
+                git reset --hard origin/"$BRANCH" 2>/dev/null || true
                 cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
                 git add -f downloads/
                 git add README.md
@@ -626,7 +573,4 @@ jobs:
             done
           fi
 
-          echo ""
-          echo "=========================================="
-          echo "✅ All files pushed successfully!"
-          echo "=========================================="
+          echo "✅ Done!"
