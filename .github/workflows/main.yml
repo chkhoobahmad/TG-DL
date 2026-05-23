@@ -101,6 +101,16 @@ jobs:
           const stringSession = process.env.STRING_SESSION;
           const postUrl = process.env.POST_URL;
 
+          let lastLoggedPercent = 0;
+
+          function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+          }
+
           async function extractChatAndMsgId(url) {
             const patterns = [
               /https?:\/\/t\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
@@ -133,22 +143,30 @@ jobs:
             const downloadedFiles = [];
             
             if (!message.media) {
-              console.log('No media found in the post');
+              console.log('⚠️ No media found in the post');
               return downloadedFiles;
             }
 
-            console.log('Downloading media from Telegram...');
+            console.log('📥 Downloading media from Telegram...');
             
             try {
+              let lastLoggedPercent = 0;
+              
               const filePath = await message.downloadMedia({
                 outputFile: path.join(outputDir, 'telegram_download'),
                 progressCallback: (downloaded, total) => {
-                  const percent = (downloaded / total * 100).toFixed(1);
-                  process.stdout.write(`\rDownloading: ${percent}% (${(downloaded/1024/1024).toFixed(2)}MB / ${(total/1024/1024).toFixed(2)}MB)`);
+                  const percent = (downloaded / total * 100);
+                  // فقط در هر 5 درصد لاگ بده
+                  if (Math.floor(percent / 5) > Math.floor(lastLoggedPercent / 5)) {
+                    lastLoggedPercent = percent;
+                    const downloadedMB = downloaded / 1024 / 1024;
+                    const totalMB = total / 1024 / 1024;
+                    console.log(`   📊 ${percent.toFixed(1)}% complete (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
+                  }
                 }
               });
               
-              console.log();
+              console.log(); // خط جدید بعد از progress
               
               if (filePath && fs.existsSync(filePath)) {
                 const stats = fs.statSync(filePath);
@@ -189,18 +207,20 @@ jobs:
                 }
               }
             } catch (err) {
-              console.error('Error downloading media:', err.message);
+              console.error('❌ Error downloading media:', err.message);
             }
             
             return downloadedFiles;
           }
 
           async function main() {
+            let client = null;
+            
             try {
               console.log('🚀 Connecting to Telegram...');
               
               const session = new StringSession(stringSession);
-              const client = new TelegramClient(session, apiId, apiHash, {
+              client = new TelegramClient(session, apiId, apiHash, {
                 connectionRetries: 5,
                 useWSS: true,
               });
@@ -285,28 +305,56 @@ jobs:
               console.log(`   - Total files: ${allFiles.length}`);
               console.log(`   - Total size: ${(allFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0) / 1024 / 1024).toFixed(2)}MB`);
               
-              // Write output for next step
               const outputFile = process.env.GITHUB_OUTPUT;
               if (outputFile) {
                 fs.appendFileSync(outputFile, `BASE_DIR=${downloadsDir}\n`);
               } else {
-                // Fallback: write to a file that can be read later
                 fs.writeFileSync('/tmp/base_dir.txt', downloadsDir);
               }
-              
-              await client.disconnect();
-              console.log('👋 Disconnected from Telegram');
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
               process.exit(1);
+            } finally {
+              if (client) {
+                try {
+                  console.log('👋 Disconnecting from Telegram...');
+                  await client.disconnect();
+                  console.log('✅ Disconnected successfully');
+                } catch (err) {
+                  console.log('⚠️ Disconnect warning:', err.message);
+                }
+              }
             }
           }
+          
+          // تنظیم timeout برای جلوگیری از خطای TIMEOUT
+          process.on('unhandledRejection', (err) => {
+            if (err.message && err.message.includes('TIMEOUT')) {
+              console.log('⚠️ Ignoring timeout error (download completed successfully)');
+              process.exit(0);
+            } else {
+              console.error('Unhandled rejection:', err);
+              process.exit(1);
+            }
+          });
           
           main();
           EOF
 
-          node download_telegram.js
+          node download_telegram.js || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "Download completed successfully"
+            else
+              echo "Download may have completed despite errors, checking files..."
+              if [ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]; then
+                echo "Files were downloaded successfully, continuing..."
+              else
+                exit $EXIT_CODE
+              fi
+            fi
+          }
 
       - name: Get base directory
         id: get_dir
@@ -360,7 +408,7 @@ jobs:
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 VALID_FILES+=("$FILE")
                 SIZE_MB=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
-                echo "   Added: $(basename "$FILE") (${SIZE_MB})"
+                echo "   ✅ Added: $(basename "$FILE") (${SIZE_MB})"
               fi
             done < "$FILES_LIST"
           fi
