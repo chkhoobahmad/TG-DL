@@ -1,11 +1,3 @@
-# 📥 Downloads from Telegram
+# Downloads
 
----
-
-## 📁 Available Downloads
-
-- [telegram_1779567274_5190](./telegram_1779567274_5190)
-
----
-
-*🛠️ Created by [avasam.ir](https://avasam.ir)*
+No files available.
