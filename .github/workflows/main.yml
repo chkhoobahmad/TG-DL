@@ -1,0 +1,514 @@
+name: ⬇️ 02- Download from Telegram Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_url:
+        description: '🔗 لینک پست تلگرام (مثال: https://t.me/username/123)'
+        required: true
+        type: string
+      mode:
+        description: '📦 حالت دانلود'
+        required: false
+        default: 'zip'
+        type: choice
+        options:
+          - normal
+          - zip
+      split_size_mb:
+        description: '📏 حداکثر حجم هر قسمت (مگابایت)'
+        required: false
+        default: '45'
+        type: string
+
+jobs:
+  download-from-telegram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: 🧹 Extreme disk space cleanup
+        run: |
+          echo "Freeing up massive disk space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/az
+          sudo rm -rf /opt/microsoft
+          sudo rm -rf /opt/pipx
+          sudo rm -rf /usr/lib/jvm
+          sudo rm -rf /usr/local/go
+          sudo rm -rf /usr/share/gradle
+          sudo rm -rf /usr/share/maven
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/local/share/gecko_driver
+          sudo docker system prune -a -f --volumes 2>/dev/null || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          sudo rm -rf /tmp/*
+          sudo rm -rf /var/tmp/*
+          rm -rf ~/.cache
+          rm -rf ~/.npm
+          rm -rf ~/.cargo
+          rm -rf ~/.rustup
+          
+          echo ""
+          echo "📊 Available disk space after cleanup:"
+          df -h /
+          
+          AVAILABLE_GB=$(df --output=avail / | tail -n 1 | awk '{print int($1/1024/1024)}')
+          if [ $AVAILABLE_GB -lt 5 ]; then
+            echo "❌ Only ${AVAILABLE_GB}GB available! Not enough space."
+            exit 1
+          fi
+          echo "✅ ${AVAILABLE_GB}GB available - good to continue!"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install gramjs
+          sudo apt-get update
+          sudo apt-get install -y zip curl bc
+
+      - name: Configure Git for Large Files
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+          git config --global core.compression 0
+          git config --global pack.windowMemory 256m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Download from Telegram
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
+          POST_URL: ${{ github.event.inputs.post_url }}
+          MODE: ${{ github.event.inputs.mode }}
+          SPLIT_SIZE_MB: ${{ github.event.inputs.split_size_mb }}
+        run: |
+          cat > download_telegram.js << 'EOF'
+          const { TelegramClient } = require('gramjs');
+          const { StringSession } = require('gramjs/sessions');
+          const fs = require('fs');
+          const path = require('path');
+          const { execSync } = require('child_process');
+
+          const apiId = parseInt(process.env.API_ID);
+          const apiHash = process.env.API_HASH;
+          const stringSession = process.env.STRING_SESSION;
+          const postUrl = process.env.POST_URL;
+          const mode = process.env.MODE || 'zip';
+          const splitSizeMB = parseInt(process.env.SPLIT_SIZE_MB) || 45;
+
+          const session = new StringSession(stringSession);
+          const client = new TelegramClient(session, apiId, apiHash, {
+            connectionRetries: 5,
+          });
+
+          async function extractChatAndMsgId(url) {
+            // https://t.me/username/123
+            // https://t.me/c/123456789/123
+            const match = url.match(/https?:\/\/t\.me\/(?:c\/)?([^\/]+)\/(\d+)/);
+            if (!match) throw new Error('Invalid Telegram post URL');
+            
+            let chatId = match[1];
+            const msgId = parseInt(match[2]);
+            
+            if (chatId.startsWith('c/')) {
+              chatId = '-100' + chatId.substring(2);
+            } else if (!isNaN(parseInt(chatId)) && chatId.length > 5) {
+              chatId = '-100' + chatId;
+            }
+            
+            return { chatId, msgId };
+          }
+
+          async function downloadMedia(message, outputDir) {
+            const downloadedFiles = [];
+            
+            if (message.media) {
+              console.log('Downloading media...');
+              try {
+                const filePath = await client.downloadMedia(message.media, {
+                  outputFile: path.join(outputDir, 'downloaded_file'),
+                });
+                
+                if (filePath && fs.existsSync(filePath)) {
+                  const stats = fs.statSync(filePath);
+                  if (stats.size > 0) {
+                    downloadedFiles.push(filePath);
+                    console.log(`Downloaded: ${filePath} (${stats.size} bytes)`);
+                  }
+                }
+              } catch (err) {
+                console.error('Error downloading media:', err.message);
+              }
+            }
+            
+            if (message.message && message.message.length > 0) {
+              const textFile = path.join(outputDir, 'message_text.txt');
+              fs.writeFileSync(textFile, message.message);
+              downloadedFiles.push(textFile);
+              console.log(`Saved message text: ${textFile}`);
+            }
+            
+            return downloadedFiles;
+          }
+
+          async function main() {
+            try {
+              console.log('Connecting to Telegram...');
+              await client.start({
+                phone: () => Promise.reject(new Error('STRING_SESSION should be used instead')),
+                phoneCode: () => Promise.reject(new Error('STRING_SESSION should be used instead')),
+                onError: (err) => console.error('Connection error:', err),
+              });
+              console.log('Connected successfully!');
+
+              const { chatId, msgId } = await extractChatAndMsgId(postUrl);
+              console.log(`Fetching message from chat: ${chatId}, message ID: ${msgId}`);
+
+              let chat;
+              if (chatId.toString().startsWith('-100')) {
+                chat = await client.getInputEntity(parseInt(chatId));
+              } else {
+                chat = await client.getInputEntity(chatId);
+              }
+
+              const messages = await client.getMessages(chat, { ids: msgId });
+              const message = messages[0];
+
+              if (!message) {
+                throw new Error('Message not found');
+              }
+
+              console.log('Message found!');
+              
+              const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+              const baseDir = `/tmp/download_${timestamp}`;
+              const downloadsDir = path.join(baseDir, 'downloads');
+              fs.mkdirSync(downloadsDir, { recursive: true });
+
+              const downloadedFiles = await downloadMedia(message, downloadsDir);
+              
+              if (downloadedFiles.length === 0) {
+                console.log('No media found in the post, saving message info...');
+                const infoFile = path.join(downloadsDir, 'post_info.json');
+                fs.writeFileSync(infoFile, JSON.stringify({
+                  url: postUrl,
+                  chatId: chatId,
+                  messageId: msgId,
+                  date: message.date,
+                  text: message.message || '',
+                  hasMedia: !!message.media,
+                }, null, 2));
+                downloadedFiles.push(infoFile);
+              }
+
+              console.log(`Downloaded ${downloadedFiles.length} file(s)`);
+              
+              // Save list of downloaded files
+              const filesList = path.join(baseDir, 'files.txt');
+              fs.writeFileSync(filesList, downloadedFiles.join('\n'));
+              
+              console.log('Download completed!');
+              await client.disconnect();
+              
+              // Output base directory for next steps
+              console.log(`::set-output name=BASE_DIR::${baseDir}`);
+              
+            } catch (error) {
+              console.error('Fatal error:', error);
+              process.exit(1);
+            }
+          }
+
+          main();
+          EOF
+
+          node download_telegram.js
+
+      - name: Get base directory
+        id: get_dir
+        run: |
+          # Extract BASE_DIR from the output or find it
+          BASE_DIR=$(ls -td /tmp/download_* 2>/dev/null | head -1)
+          echo "BASE_DIR=${BASE_DIR}" >> $GITHUB_OUTPUT
+          echo "Base directory: ${BASE_DIR}"
+
+      - name: Create ZIP archives
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          SPLIT_SIZE_MB="${{ github.event.inputs.split_size_mb }}"
+          BASE_DIR="${{ steps.get_dir.outputs.BASE_DIR }}"
+          
+          if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR/downloads" ]; then
+            echo "No downloads found!"
+            exit 1
+          fi
+
+          BACKUP_DIR="/tmp/backup_$$"
+          mkdir -p "$BACKUP_DIR"
+          echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
+
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          get_unique_folder() {
+            local BASE_PATH="$1"
+            local NAME="$2"
+            local TIMESTAMP=$(date +%s)
+            local RANDOM=$((RANDOM % 10000))
+            echo "${NAME}_${TIMESTAMP}_${RANDOM}"
+          }
+
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          FOLDER_NAME="telegram_${TIMESTAMP}"
+          FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$FOLDER_NAME")
+          mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+
+          echo "Creating archive in folder: $BACKUP_DIR/$FOLDER_NAME"
+
+          # Read files list
+          FILES_LIST="$BASE_DIR/files.txt"
+          VALID_FILES=()
+          
+          if [ -f "$FILES_LIST" ]; then
+            while IFS= read -r FILE; do
+              if [ -f "$FILE" ] && [ -s "$FILE" ]; then
+                VALID_FILES+=("$FILE")
+                echo "Adding to archive: $(basename "$FILE")"
+              fi
+            done < "$FILES_LIST"
+          fi
+
+          if [ ${#VALID_FILES[@]} -eq 0 ]; then
+            echo "No valid files to archive!"
+            exit 1
+          fi
+
+          TEMP_ZIP_DIR="$BACKUP_DIR/$FOLDER_NAME/temp_files"
+          mkdir -p "$TEMP_ZIP_DIR"
+
+          for FILE in "${VALID_FILES[@]}"; do
+            ORIGINAL_NAME=$(basename "$FILE")
+            cp "$FILE" "$TEMP_ZIP_DIR/$ORIGINAL_NAME"
+          done
+
+          ARCHIVE_NAME="telegram_download_${TIMESTAMP}"
+          ARCHIVE_PATH="$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip"
+          
+          cd "$TEMP_ZIP_DIR"
+          
+          if [ "$MODE" = "zip" ]; then
+            zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_PATH}" ./*
+          else
+            zip -r -0 "${ARCHIVE_PATH}" ./*
+          fi
+          
+          cd - > /dev/null
+          rm -rf "$TEMP_ZIP_DIR"
+
+          # Create README.md
+          FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
+          DOWNLOAD_LINKS_MD=""
+          LINK_NUM=0
+          TOTAL_ARCHIVE_SIZE=0
+          
+          for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
+            [ -f "$part_file" ] || continue
+            PART_BASENAME=$(basename "$part_file")
+            PART_ENCODED=$(urlencode "${PART_BASENAME}")
+            RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+            LINK_NUM=$((LINK_NUM + 1))
+            DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+            PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+            TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
+          done
+          
+          ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
+          POST_URL="${{ github.event.inputs.post_url }}"
+
+          {
+            echo "# Telegram Download - ${TIMESTAMP}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Download Information"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Source** | [${POST_URL}](${POST_URL}) |"
+            echo "| **Archive Name** | \`${ARCHIVE_NAME}.zip\` |"
+            echo "| **Total Size** | ${ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
+            echo "| **Status** | **Complete (100%)** |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Download Links"
+            echo ""
+            echo "| # | File | Link |"
+            echo "|---|------|------|"
+            printf '%s' "${DOWNLOAD_LINKS_MD}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## How to Extract"
+            echo ""
+            echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
+            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR, 7-Zip, Ark, or any standard zip tool"
+            echo "3. **Extract** — all parts combine automatically"
+            echo ""
+            echo "---"
+            echo ""
+            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+          } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
+
+          echo "Archive created successfully!"
+
+      - name: Update README.md with download links
+        run: |
+          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+
+          mkdir -p downloads
+          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+            cp -r "$BACKUP_DIR"/* downloads/
+          fi
+
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+
+          if [ -z "$FOLDERS" ]; then
+            echo "No folders found in downloads"
+            exit 0
+          fi
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          {
+            echo "# Downloaded from Telegram :"
+            echo ""
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "- [${FOLDER}](./${FOLDER_ENCODED})"
+              fi
+            done
+            echo ""
+            echo "---"
+            echo ""
+            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+          } > "downloads/README.md"
+
+          echo "downloads/README.md created with list of downloaded files"
+
+          SECTION_TITLE="دانلود‌های تلگرام"
+
+          if [ ! -f "README.md" ]; then
+            echo "# AVASAM Telegram Downloader" > README.md
+            echo "" >> README.md
+            echo "https://avasam.ir" >> README.md
+            echo "" >> README.md
+          fi
+
+          if grep -q "$SECTION_TITLE" README.md; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
+            sed -i '${/^$/d;}' README.md
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            COUNTER=1
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER_ENCODED)"
+                echo ""
+                COUNTER=$((COUNTER + 1))
+              fi
+            done
+            echo "---"
+          } >> README.md
+
+          echo "README.md updated with download links"
+
+      - name: Commit & Push
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
+
+          BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
+          echo "Total files to push: $BACKUP_FILE_COUNT"
+
+          if [ "$BACKUP_FILE_COUNT" -eq 0 ]; then
+            echo "Nothing to push"
+            exit 0
+          fi
+
+          git fetch origin "$BRANCH"
+          git reset --hard origin/"$BRANCH"
+
+          mkdir -p downloads
+          cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
+
+          git add -f downloads/
+          git add README.md
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Download from Telegram post [skip ci]"
+            
+            PUSH_RETRY=0
+            while [ $PUSH_RETRY -lt 10 ]; do
+              PUSH_RETRY=$((PUSH_RETRY + 1))
+              if timeout 300 git push origin HEAD:"$BRANCH"; then
+                echo "Push successful!"
+                break
+              else
+                echo "Push failed, retry $PUSH_RETRY/10..."
+                sleep $((3 + RANDOM % 7))
+                git fetch origin "$BRANCH"
+                git reset --hard origin/"$BRANCH"
+                mkdir -p downloads
+                cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
+                git add -f downloads/
+                git add README.md
+                if ! git diff --cached --quiet; then
+                  git commit -m "Download from Telegram post [skip ci]"
+                fi
+              fi
+            done
+          fi
+
+          echo "All files pushed successfully!"
