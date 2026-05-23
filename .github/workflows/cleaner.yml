@@ -1,40 +1,15 @@
-name: 🧹 Clean Repository Files
+name: 🧹 Clean All Files
 
 on:
   workflow_dispatch:
-    inputs:
-      clean_type:
-        description: 'نوع پاکسازی'
-        required: true
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - old_files
-          - specific_folder
-          - keep_last_n
-      folder_name:
-        description: 'نام پوشه (در حالت specific_folder)'
-        required: false
-        type: string
-      days_old:
-        description: 'پاک کردن فایل‌های قدیمی‌تر از (روز) - برای حالت old_files'
-        required: false
-        default: '30'
-        type: string
-      keep_count:
-        description: 'تعداد آخرین فایل‌هایی که نگه داشته شوند (برای حالت keep_last_n)'
-        required: false
-        default: '5'
-        type: string
 
 jobs:
-  clean-repository:
+  clean-all:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -45,240 +20,29 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Clean files
+      - name: Remove all downloaded files
         run: |
-          CLEAN_TYPE="${{ github.event.inputs.clean_type }}"
-          FOLDER_NAME="${{ github.event.inputs.folder_name }}"
-          DAYS_OLD="${{ github.event.inputs.days_old }}"
-          KEEP_COUNT="${{ github.event.inputs.keep_count }}"
-
-          echo "🧹 Starting cleanup process..."
-          echo "Clean type: $CLEAN_TYPE"
-
-          # تابع برای حذف فایل‌ها از git
-          remove_from_git() {
-            local path="$1"
-            if [ -e "$path" ]; then
-              git rm -rf --ignore-unmatch "$path"
-              echo "✅ Removed: $path"
-            else
-              echo "⚠️ Not found: $path"
-            fi
-          }
-
-          # تابع برای حذف فایل‌های خالی از downloads/README.md
-          clean_readme_links() {
-            if [ -f "downloads/README.md" ]; then
-              # حذف لینک‌هایی که به پوشه‌های غیرموجود اشاره می‌کنند
-              while IFS= read -r line; do
-                if [[ "$line" =~ \[(.*)\]\((.*)\) ]]; then
-                  folder_name="${BASH_REMATCH[1]}"
-                  if [ ! -d "downloads/$folder_name" ]; then
-                    echo "Removing broken link: $folder_name"
-                    sed -i "/$folder_name/d" downloads/README.md
-                  fi
-                fi
-              done < downloads/README.md
-              
-              # حذف خطوط خالی اضافی
-              sed -i '/^$/N;/^\n$/D' downloads/README.md
-            fi
-          }
-
-          case "$CLEAN_TYPE" in
-            all)
-              echo "🗑️ Cleaning ALL downloaded files..."
-              
-              # حذف تمام پوشه‌های داخل downloads (به جز README.md)
-              if [ -d "downloads" ]; then
-                for folder in downloads/*/; do
-                  if [ -d "$folder" ]; then
-                    folder_name=$(basename "$folder")
-                    if [ "$folder_name" != "README.md" ]; then
-                      remove_from_git "$folder"
-                    fi
-                  fi
-                done
-              fi
-              
-              # بازنشانی فایل README
-              cat > downloads/README.md << 'EOF'
-# 📥 Downloads from Telegram
-
----
-
-## 📁 Available Downloads
-
-*No files available. Use the workflow to download from Telegram.*
-
----
-
-*🛠️ Created by [avasam.ir](https://avasam.ir)*
-EOF
-              ;;
-
-            old_files)
-              echo "🗑️ Cleaning files older than $DAYS_OLD days..."
-              
-              CURRENT_DATE=$(date +%s)
-              
-              if [ -d "downloads" ]; then
-                for folder in downloads/*/; do
-                  if [ -d "$folder" ]; then
-                    # گرفتن تاریخ آخرین commit برای این پوشه
-                    FOLDER_DATE=$(git log -1 --format=%ct -- "$folder" 2>/dev/null || echo "0")
-                    FOLDER_AGE=$(( (CURRENT_DATE - FOLDER_DATE) / 86400 ))
-                    
-                    if [ $FOLDER_AGE -gt $DAYS_OLD ]; then
-                      echo "📁 Folder $folder is $FOLDER_AGE days old - removing"
-                      remove_from_git "$folder"
-                    else
-                      echo "📁 Keeping $folder ($FOLDER_AGE days old)"
-                    fi
-                  fi
-                done
-              fi
-              
-              clean_readme_links
-              ;;
-
-            specific_folder)
-              if [ -z "$FOLDER_NAME" ]; then
-                echo "❌ Error: folder_name is required for specific_folder mode"
-                exit 1
-              fi
-              
-              echo "🗑️ Cleaning specific folder: $FOLDER_NAME"
-              
-              if [ -d "downloads/$FOLDER_NAME" ]; then
-                remove_from_git "downloads/$FOLDER_NAME"
-              else
-                echo "⚠️ Folder not found: downloads/$FOLDER_NAME"
-              fi
-              
-              clean_readme_links
-              ;;
-
-            keep_last_n)
-              echo "🗑️ Keeping only last $KEEP_COUNT folders..."
-              
-              if [ -d "downloads" ]; then
-                # لیست پوشه‌ها بر اساس تاریخ آخرین commit (جدیدترین اول)
-                folders=$(for folder in downloads/*/; do
-                  if [ -d "$folder" ]; then
-                    last_commit=$(git log -1 --format=%ct -- "$folder" 2>/dev/null || echo "0")
-                    echo "$last_commit|$folder"
-                  fi
-                done | sort -rn | head -n $KEEP_COUNT | cut -d'|' -f2)
-                
-                # حذف پوشه‌هایی که در لیست نیستند
-                for folder in downloads/*/; do
-                  if [ -d "$folder" ]; then
-                    if ! echo "$folders" | grep -q "$folder"; then
-                      echo "📁 Removing old folder: $folder"
-                      remove_from_git "$folder"
-                    fi
-                  fi
-                done
-              fi
-              
-              clean_readme_links
-              ;;
-
-            *)
-              echo "❌ Unknown clean type: $CLEAN_TYPE"
-              exit 1
-              ;;
-          esac
-
-          # حذف فایل‌های خالی از git
-          echo "🧹 Cleaning empty directories..."
-          find downloads -type d -empty -delete 2>/dev/null || true
-
-          echo ""
-          echo "📊 Cleanup completed!"
-
-      - name: Update main README
-        run: |
-          SECTION_TITLE="📥 دانلود‌های تلگرام"
+          echo "🧹 Removing all downloaded files..."
           
-          # شمارش پوشه‌های موجود
+          # حذف تمام پوشه‌های داخل downloads
           if [ -d "downloads" ]; then
-            FOLDER_COUNT=$(find downloads -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-          else
-            FOLDER_COUNT=0
-          fi
-          
-          if [ $FOLDER_COUNT -eq 0 ]; then
-            echo "No folders left, removing section from README.md"
-            
-            if [ -f "README.md" ]; then
-              # حذف سکشن دانلودها از README اصلی
-              sed -i "/$SECTION_TITLE/,/^---$/d" README.md
-              sed -i '${/^$/d;}' README.md
-              
-              # اضافه کردن پیام خالی بودن
-              echo "" >> README.md
-              echo "---" >> README.md
-              echo "" >> README.md
-              echo "## $SECTION_TITLE" >> README.md
-              echo "" >> README.md
-              echo "*No files available. Use the workflow to download from Telegram.*" >> README.md
-              echo "" >> README.md
-              echo "---" >> README.md
-            fi
-          fi
-
-      - name: Commit and push changes
-        run: |
-          # بررسی وجود تغییرات
-          if git diff --cached --quiet && ! git diff --quiet; then
-            git add -A
-          fi
-          
-          if ! git diff --cached --quiet; then
-            CLEAN_TYPE="${{ github.event.inputs.clean_type }}"
-            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            
-            git commit -m "🧹 Clean repository ($CLEAN_TYPE) - $TIMESTAMP [skip ci]"
-            
-            # تلاش برای push با retry
-            for i in {1..5}; do
-              if git push origin HEAD:"${GITHUB_REF_NAME}"; then
-                echo "✅ Changes pushed successfully!"
-                break
-              else
-                echo "Push failed, retry $i/5..."
-                git pull --rebase origin "${GITHUB_REF_NAME}" || true
-                sleep 3
+            for folder in downloads/*/; do
+              if [ -d "$folder" ]; then
+                git rm -rf "$folder"
               fi
             done
-          else
-            echo "No changes to commit"
           fi
+          
+          # بازنشانی فایل README
+          echo "# Downloads" > downloads/README.md
+          echo "" >> downloads/README.md
+          echo "No files available." >> downloads/README.md
 
-      - name: Summary
+      - name: Commit and push
         run: |
-          echo ""
-          echo "=========================================="
-          echo "✅ Cleanup completed successfully!"
-          echo "=========================================="
-          echo ""
+          git add -A
+          git commit -m "Clean all files [skip ci]" || echo "No changes"
+          git push origin HEAD:"${GITHUB_REF_NAME}" || true
           
-          # نمایش وضعیت نهایی
-          if [ -d "downloads" ]; then
-            REMAINING=$(find downloads -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
-            echo "📁 Remaining folders: $REMAINING"
-            
-            if [ $REMAINING -gt 0 ]; then
-              echo ""
-              echo "Remaining files:"
-              find downloads -mindepth 1 -maxdepth 1 -type d | while read folder; do
-                SIZE=$(du -sh "$folder" | cut -f1)
-                echo "  - $(basename "$folder"): $SIZE"
-              done
-            fi
-          fi
-          
-          echo ""
-          echo "=========================================="
+      - name: Done
+        run: echo "✅ All files cleaned!"
