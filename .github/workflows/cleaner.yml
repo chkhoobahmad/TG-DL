@@ -20,64 +20,30 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      - name: Remove all downloaded files
+      - name: Clean downloads folder completely
         run: |
-          echo "🧹 Removing all files inside downloads folder..."
+          echo "🧹 Cleaning downloads folder..."
           
-          # اگر پوشه downloads وجود دارد، تمام محتویات آن را حذف کن
-          if [ -d "downloads" ]; then
-            # حذف تمام فایل‌ها و پوشه‌های داخل downloads (از جمله README.md)
-            rm -rf downloads/*
-            
-            # حذف فایل‌های مخفی داخل downloads
-            rm -rf downloads/.[!.]* downloads/..?* 2>/dev/null || true
-            
-            echo "✅ All files removed from downloads folder"
-          else
-            # اگر پوشه وجود ندارد، آن را ایجاد کن
-            mkdir -p downloads
-            echo "📁 Downloads folder created"
-          fi
+          # اطمینان از وجود پوشه downloads
+          mkdir -p downloads
           
-          # نمایش محتویات پوشه downloads برای تأیید خالی بودن
-          echo "📂 Current contents of downloads folder:"
-          ls -la downloads/ || echo "Folder is empty"
+          # حذف تمام فایل‌ها و پوشه‌های داخل downloads
+          rm -rf downloads/*
+          
+          # حذف فایل‌های مخفی داخل downloads (اگر وجود داشته باشند)
+          shopt -s dotglob nullglob
+          rm -rf downloads/.* 2>/dev/null || true
+          
+          echo "✅ Downloads folder is now empty"
+          ls -la downloads/
 
-      - name: Commit and push changes
+      - name: Commit and push
         run: |
-          # اضافه کردن تغییرات به git
           git add downloads/
-          
-          # commit کردن تغییرات
-          if git diff --cached --quiet; then
-            echo "ℹ️ No changes to commit"
-          else
-            git commit -m "Clean all files from downloads folder [skip ci]"
-            echo "✅ Changes committed"
-          fi
-          
-          # push کردن به مخزن
-          git push origin HEAD:"${GITHUB_REF_NAME}" || {
-            echo "⚠️ Push failed, trying with force..."
-            git push origin HEAD:"${GITHUB_REF_NAME}" --force || true
-          }
-
-      - name: Verify cleanup
-        run: |
-          echo "🔍 Verifying cleanup..."
-          if [ -d "downloads" ]; then
-            FILE_COUNT=$(find downloads -type f | wc -l)
-            if [ $FILE_COUNT -eq 0 ]; then
-              echo "✅ Success! Downloads folder is completely empty (0 files)"
-            else
-              echo "⚠️ Warning: $FILE_COUNT files still remain in downloads folder"
-              find downloads -type f -list
-            fi
-          else
-            echo "📁 Downloads folder doesn't exist"
-          fi
+          git commit -m "Clean all files from downloads folder [skip ci]" || echo "No changes to commit"
+          git push origin HEAD:"${GITHUB_REF_NAME}" || true
 
       - name: Done
         run: |
           echo "🎉 All files cleaned successfully!"
-          echo "📁 Downloads folder is now empty"
+          echo "📁 Downloads folder exists but is empty"
