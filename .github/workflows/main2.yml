@@ -78,7 +78,7 @@ jobs:
           git config --global http.maxRequestBuffer 100M
           git config --global core.compression 0
           git config --global pack.windowMemory 256m
-          git config --global pack.packSizeLimit 50m
+          git config --global pack.packSizeLimit 100m
           git config --global pack.threads 1
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
@@ -137,15 +137,16 @@ jobs:
             return { chatId, msgId };
           }
 
-          async function downloadMediaFile(client, media, outputPath, fileName, postId) {
+          async function downloadMediaFile(client, media, outputPath, fileName) {
             return new Promise(async (resolve, reject) => {
               try {
+                let lastPercent = 0;
                 const filePath = await client.downloadMedia(media, {
                   outputFile: outputPath,
                   progressCallback: (downloaded, total) => {
                     const percent = (downloaded / total * 100);
-                    if (Math.floor(percent / 10) > Math.floor(lastLoggedPercent / 10)) {
-                      lastLoggedPercent = percent;
+                    if (Math.floor(percent / 5) > Math.floor(lastPercent / 5) || percent === 100) {
+                      lastPercent = percent;
                       const downloadedMB = downloaded / 1024 / 1024;
                       const totalMB = total / 1024 / 1024;
                       console.log(`      📊 ${percent.toFixed(1)}% (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
@@ -253,7 +254,7 @@ jobs:
               if (!path.extname(outputPath) || path.extname(outputPath) === '') {
                 const tempPath = path.join(postDir, `temp_download`);
                 try {
-                  await downloadMediaFile(client, message.media, tempPath, fileName, msgId);
+                  await downloadMediaFile(client, message.media, tempPath, fileName);
                   
                   if (fs.existsSync(tempPath)) {
                     const fileType = execSync(`file --mime-type -b "${tempPath}"`).toString().trim();
@@ -276,7 +277,7 @@ jobs:
                 }
               } else {
                 try {
-                  await downloadMediaFile(client, message.media, outputPath, fileName, msgId);
+                  await downloadMediaFile(client, message.media, outputPath, fileName);
                   downloadedFiles.push(outputPath);
                 } catch (err) {
                   console.error(`   ❌ Error downloading: ${err.message}`);
@@ -354,7 +355,6 @@ jobs:
                 allDownloads.push(result);
               }
               
-              // Save downloads info for later steps
               const downloadsInfo = {
                 totalPosts: allDownloads.length,
                 downloadDate: new Date().toISOString(),
@@ -369,7 +369,6 @@ jobs:
               
               fs.writeFileSync('/tmp/downloads_info.json', JSON.stringify(downloadsInfo, null, 2));
               
-              // Save list of post directories
               const allDirs = allDownloads.map(d => d.postDir);
               fs.writeFileSync('/tmp/all_post_dirs.txt', allDirs.join('\n'));
               
@@ -421,7 +420,7 @@ jobs:
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Create ZIP archives for each post
+      - name: Create ZIP archives (without split)
         run: |
           if [ ! -f "/tmp/all_post_dirs.txt" ]; then
             echo "❌ No downloads found!"
@@ -435,13 +434,14 @@ jobs:
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="${GITHUB_REF_NAME}"
-          SPLIT_SIZE_MB=45
           
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          # Read all post directories
+          # Clear previous folders list
+          > /tmp/folders_list.txt
+          
           while IFS= read -r POST_DIR; do
             if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
               continue
@@ -467,66 +467,36 @@ jobs:
               fi
             done
             
-            # Create zip archive
+            # Create single zip archive (no split)
             cd "$BACKUP_DIR/$FOLDER_NAME"
             
             # Remove existing zip files
             rm -f *.zip *.z[0-9]* 2>/dev/null || true
             
-            # Calculate total size
-            TOTAL_SIZE=0
-            for FILE in *; do
-              if [ -f "$FILE" ]; then
-                SIZE=$(stat -c%s "$FILE")
-                TOTAL_SIZE=$((TOTAL_SIZE + SIZE))
-              fi
-            done
-            TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
-            
             ARCHIVE_NAME="${POST_ID}"
             
-            if [ $TOTAL_SIZE_MB -gt 45 ]; then
-              echo "   📀 Creating split archive (${SPLIT_SIZE_MB}MB per part)..."
-              zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
-            else
-              echo "   📀 Creating single archive..."
-              zip -r -0 "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
-            fi
+            echo "   📀 Creating archive (no size limit)..."
+            zip -r -0 "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
             
             # Remove original files, keep only zip
             for FILE in *; do
-              if [ -f "$FILE" ] && [ "$FILE" != "${ARCHIVE_NAME}.zip" ] && [[ ! "$FILE" =~ \.z[0-9]+$ ]]; then
+              if [ -f "$FILE" ] && [ "$FILE" != "${ARCHIVE_NAME}.zip" ]; then
                 rm -f "$FILE"
               fi
             done
             
             cd - > /dev/null
             
-            # Create README for this post
+            # Get archive size
+            ARCHIVE_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
+            ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
+            
+            # Create download link
             FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-            DOWNLOAD_LINKS_MD=""
-            LINK_NUM=0
-            TOTAL_ARCHIVE_SIZE=0
+            PART_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
+            RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
             
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
-              TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
-              LINK_NUM=$((LINK_NUM + 1))
-            done
-            
-            TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
-            
-            LINK_NUM=0
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_BASENAME=$(basename "$part_file")
-              PART_ENCODED=$(urlencode "${PART_BASENAME}")
-              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-              LINK_NUM=$((LINK_NUM + 1))
-              DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
-            done
-            
+            # Create README for this post
             {
               echo "# 📥 Telegram Post ${POST_ID}"
               echo ""
@@ -538,31 +508,31 @@ jobs:
               echo "|----------|-------|"
               echo "| **Channel** | \`${CHANNEL_NAME}\` |"
               echo "| **Post ID** | \`${POST_ID}\` |"
-              echo "| **Archive Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
+              echo "| **Archive Size** | ${ARCHIVE_SIZE_MB} MB |"
               echo "| **Status** | ✅ **Complete** |"
               echo ""
               echo "---"
               echo ""
-              echo "## 🔗 Download Links"
+              echo "## 🔗 Download Link"
               echo ""
-              echo "| # | File | Link |"
-              echo "|---|------|------|"
-              printf '%s' "${DOWNLOAD_LINKS_MD}"
+              echo "| File | Link |"
+              echo "|------|------|"
+              echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
               echo ""
               echo "---"
               echo ""
               echo "## 📖 How to Extract"
               echo ""
-              echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
-              echo "2. **Open** \`${POST_ID}.zip\` with WinRAR or 7-Zip"
-              echo "3. **Extract** — all parts combine automatically"
+              echo "1. **Download** \`${ARCHIVE_NAME}.zip\`"
+              echo "2. **Extract** with WinRAR, 7-Zip, or any zip tool"
+              echo "3. After extraction, you will find all files from this post"
               echo ""
               echo "---"
               echo ""
               echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
             } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
             
-            echo "   ✅ Archive created (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB)"
+            echo "   ✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
             
             # Save folder name for later
             echo "$FOLDER_NAME" >> /tmp/folders_list.txt
@@ -644,8 +614,8 @@ jobs:
           ## 📖 How to use
           
           1. Click on any post folder above
-          2. Download all parts of the zip file
-          3. Extract the first part (.zip) to get all files
+          2. Download the zip file
+          3. Extract to get all files from the post
           
           ---
           
@@ -712,7 +682,7 @@ jobs:
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
-          # Check if there are changes to commit
+          # Add all files
           git add -f downloads/
           git add README.md
           
@@ -731,6 +701,11 @@ jobs:
                 if [ $i -lt 5 ]; then
                   sleep 10
                   git pull --rebase origin "$BRANCH" 2>/dev/null || true
+                  git add -f downloads/
+                  git add README.md
+                  if ! git diff --cached --quiet; then
+                    git commit -m "Download multiple Telegram posts - $TIMESTAMP [skip ci]"
+                  fi
                 fi
               fi
             done
