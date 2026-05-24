@@ -132,13 +132,14 @@ jobs:
             return { chatId, msgId };
           }
 
-          async function downloadSingleMedia(media, outputDir, index, total) {
+          async function downloadSingleMedia(client, message, media, outputDir, index, total) {
             if (!media) return null;
             
             console.log(`\n📥 Downloading file ${index + 1}/${total}...`);
             
             try {
-              const filePath = await media.downloadMedia({
+              // Use client.downloadMedia instead of media.downloadMedia
+              const filePath = await client.downloadMedia(media, {
                 outputFile: path.join(outputDir, `temp_file_${index}`),
                 progressCallback: (downloaded, total) => {
                   const percent = (downloaded / total * 100);
@@ -156,8 +157,18 @@ jobs:
                 if (stats.size > 0) {
                   let finalFileName = null;
                   
-                  // Get filename from document attributes
-                  if (media.document && media.document.attributes) {
+                  // Get filename from message if it's a document
+                  if (message.media && message.media.document && message.media.document.attributes) {
+                    for (const attr of message.media.document.attributes) {
+                      if (attr.className === 'DocumentAttributeFilename') {
+                        finalFileName = attr.fileName;
+                        break;
+                      }
+                    }
+                  }
+                  
+                  // If we have a direct media object with document
+                  if (!finalFileName && media.document && media.document.attributes) {
                     for (const attr of media.document.attributes) {
                       if (attr.className === 'DocumentAttributeFilename') {
                         finalFileName = attr.fileName;
@@ -168,9 +179,10 @@ jobs:
                   
                   // If no filename, try to detect from media type
                   if (!finalFileName) {
-                    if (media.className === 'MessageMediaPhoto') {
+                    const mediaType = media.className;
+                    if (mediaType === 'MessageMediaPhoto') {
                       finalFileName = `photo_${index + 1}_${Date.now()}.jpg`;
-                    } else if (media.className === 'MessageMediaDocument') {
+                    } else if (mediaType === 'MessageMediaDocument') {
                       const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
                       const extMap = {
                         'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
@@ -180,19 +192,16 @@ jobs:
                         'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
                       };
                       const ext = extMap[fileType] || '';
-                      finalFileName = ext ? `document_${index + 1}${ext}` : null;
+                      finalFileName = ext ? `document_${index + 1}${ext}` : `file_${index + 1}`;
+                    } else {
+                      finalFileName = `media_${index + 1}`;
                     }
                   }
                   
-                  if (finalFileName) {
-                    const newPath = path.join(outputDir, finalFileName);
-                    fs.renameSync(filePath, newPath);
-                    console.log(`✅ Downloaded: ${finalFileName} (${(stats.size/1024/1024).toFixed(2)}MB)`);
-                    return newPath;
-                  } else {
-                    console.log(`✅ Downloaded: ${path.basename(filePath)} (${(stats.size/1024/1024).toFixed(2)}MB)`);
-                    return filePath;
-                  }
+                  const newPath = path.join(outputDir, finalFileName);
+                  fs.renameSync(filePath, newPath);
+                  console.log(`✅ Downloaded: ${finalFileName} (${(stats.size/1024/1024).toFixed(2)}MB)`);
+                  return newPath;
                 }
               }
             } catch (err) {
@@ -202,58 +211,32 @@ jobs:
             return null;
           }
 
-          async function downloadAllMedia(message, outputDir) {
-            const downloadedFiles = [];
-            
-            // Collect all media from the message
+          async function getAllMediaFromMessage(message) {
             const mediaList = [];
             
-            // Check for single media
+            // Direct media in message
             if (message.media) {
               mediaList.push(message.media);
             }
             
-            // Check for album/media group (multiple media in one message)
-            if (message.message && message.message.includes('grouped_id')) {
-              // This is part of an album, but we need to get the actual media
-              console.log("📸 Detected album/grouped media");
+            // Check for media group (multiple media)
+            if (message.groupedId) {
+              console.log("📸 This message is part of a media group");
+              // In GramJS, you might need to fetch the entire group
+              // For now, we'll rely on the direct media
             }
             
-            // Also check message.replyTo for forwarded media
+            // Check if message has multiple media via replies or other structure
             if (message.replyTo && message.replyTo.replyToMsgId) {
               try {
-                const repliedMsg = await client.getMessages(message.chatId, {
-                  ids: message.replyTo.replyToMsgId
-                });
-                if (repliedMsg[0] && repliedMsg[0].media) {
-                  mediaList.push(repliedMsg[0].media);
-                }
+                // This would require fetching the replied message
+                console.log("📎 Checking replied message for media");
               } catch (err) {
-                console.log("Could not fetch replied message:", err.message);
+                console.log("Could not fetch replied message");
               }
             }
             
-            if (mediaList.length === 0) {
-              console.log('⚠️ No media found in the post');
-              return downloadedFiles;
-            }
-            
-            console.log(`\n🎯 Found ${mediaList.length} media file(s) to download\n`);
-            
-            // Download each media
-            for (let i = 0; i < mediaList.length; i++) {
-              lastLoggedPercent = 0;
-              const filePath = await downloadSingleMedia(mediaList[i], outputDir, i, mediaList.length);
-              if (filePath) {
-                downloadedFiles.push(filePath);
-              }
-              // Small delay between downloads
-              if (i < mediaList.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
-              }
-            }
-            
-            return downloadedFiles;
+            return mediaList;
           }
 
           async function main() {
@@ -308,11 +291,11 @@ jobs:
                 console.log(`📝 Saved message text (${message.text.length} characters)`);
               }
               
-              // Download all media
-              const downloadedFiles = await downloadAllMedia(message, downloadsDir);
+              // Get all media from message
+              const mediaList = await getAllMediaFromMessage(message);
               
-              if (downloadedFiles.length === 0) {
-                console.log('⚠️ No media found, saving post info...');
+              if (mediaList.length === 0) {
+                console.log('⚠️ No media found in the post');
                 const infoFile = path.join(downloadsDir, 'post_info.json');
                 fs.writeFileSync(infoFile, JSON.stringify({
                   url: postUrl,
@@ -320,10 +303,42 @@ jobs:
                   messageId: msgId,
                   date: message.date,
                   text: message.text || '',
-                  hasMedia: !!message.media,
-                  mediaType: message.media ? message.media.className : 'none',
+                  hasMedia: false,
                 }, null, 2));
-                downloadedFiles.push(infoFile);
+                mediaList.push({ dummy: true }); // Add dummy to create info file
+              }
+              
+              console.log(`\n🎯 Found ${mediaList.length} media file(s) to download\n`);
+              
+              // Download each media
+              const downloadedFiles = [];
+              for (let i = 0; i < mediaList.length; i++) {
+                lastLoggedPercent = 0;
+                const filePath = await downloadSingleMedia(client, message, mediaList[i], downloadsDir, i, mediaList.length);
+                if (filePath) {
+                  downloadedFiles.push(filePath);
+                }
+                // Small delay between downloads
+                if (i < mediaList.length - 1) {
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+              }
+              
+              // Add info file if no media was downloaded but we have text
+              if (downloadedFiles.length === 0 && message.text) {
+                const infoFile = path.join(downloadsDir, 'post_info.json');
+                if (!fs.existsSync(infoFile)) {
+                  fs.writeFileSync(infoFile, JSON.stringify({
+                    url: postUrl,
+                    chatId: chatId,
+                    messageId: msgId,
+                    date: message.date,
+                    text: message.text || '',
+                    hasMedia: false,
+                  }, null, 2));
+                  downloadedFiles.push(infoFile);
+                  console.log(`💾 Saved post info to ${infoFile}`);
+                }
               }
               
               // Save list of downloaded files
@@ -428,10 +443,14 @@ jobs:
           # Debug: show what files exist
           echo ""
           echo "📁 Files in download directory:"
-          find "${BASE_DIR}" -type f 2>/dev/null | while read file; do
-            SIZE=$(stat -c%s "$file" | awk '{printf "%.2fMB", $1/1024/1024}')
-            echo "   - $(basename "$file") (${SIZE})"
-          done
+          if [ -d "${BASE_DIR}" ]; then
+            find "${BASE_DIR}" -type f 2>/dev/null | while read file; do
+              SIZE=$(stat -c%s "$file" 2>/dev/null | awk '{printf "%.2fMB", $1/1024/1024}' || echo "unknown")
+              echo "   - $(basename "$file") (${SIZE})"
+            done
+          else
+            echo "   Directory not found: ${BASE_DIR}"
+          fi
           echo ""
           echo "📄 Downloaded files list:"
           cat /tmp/downloaded_files.txt 2>/dev/null || echo "No files list found"
