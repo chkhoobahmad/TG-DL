@@ -1,4 +1,4 @@
-name: ⬇️ Download from Telegram Post
+name: ⬇️ Download from Telegram Post 2
 
 on:
   workflow_dispatch:
