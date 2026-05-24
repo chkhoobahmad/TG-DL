@@ -1,4 +1,4 @@
-name: ⬇️ Download from Telegram Post 2
+name: ⬇️ Download from Telegram Post
 
 on:
   workflow_dispatch:
@@ -132,41 +132,33 @@ jobs:
             return { chatId, msgId };
           }
 
-          async function downloadAllMedia(message, outputDir) {
-            const downloadedFiles = [];
+          async function downloadSingleMedia(media, outputDir, index, total) {
+            if (!media) return null;
             
-            if (!message.media) {
-              console.log('⚠️ No media found in the post');
-              return downloadedFiles;
-            }
-
-            console.log('📥 Downloading media from Telegram...');
+            console.log(`\n📥 Downloading file ${index + 1}/${total}...`);
             
             try {
-              let lastLoggedPercent = 0;
-              
-              const filePath = await message.downloadMedia({
-                outputFile: path.join(outputDir, 'telegram_download'),
+              const filePath = await media.downloadMedia({
+                outputFile: path.join(outputDir, `temp_file_${index}`),
                 progressCallback: (downloaded, total) => {
                   const percent = (downloaded / total * 100);
-                  if (Math.floor(percent / 5) > Math.floor(lastLoggedPercent / 5)) {
+                  if (Math.floor(percent / 10) > Math.floor(lastLoggedPercent / 10)) {
                     lastLoggedPercent = percent;
                     const downloadedMB = downloaded / 1024 / 1024;
                     const totalMB = total / 1024 / 1024;
-                    console.log(`   📊 ${percent.toFixed(1)}% complete (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
+                    console.log(`   📊 ${percent.toFixed(1)}% (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
                   }
                 }
               });
-              
-              console.log();
               
               if (filePath && fs.existsSync(filePath)) {
                 const stats = fs.statSync(filePath);
                 if (stats.size > 0) {
                   let finalFileName = null;
                   
-                  if (message.media.document && message.media.document.attributes) {
-                    for (const attr of message.media.document.attributes) {
+                  // Get filename from document attributes
+                  if (media.document && media.document.attributes) {
+                    for (const attr of media.document.attributes) {
                       if (attr.className === 'DocumentAttributeFilename') {
                         finalFileName = attr.fileName;
                         break;
@@ -174,36 +166,91 @@ jobs:
                     }
                   }
                   
-                  if (!finalFileName && message.media.className === 'MessageMediaPhoto') {
-                    finalFileName = `telegram_photo_${Date.now()}.jpg`;
-                  }
-                  
+                  // If no filename, try to detect from media type
                   if (!finalFileName) {
-                    const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
-                    const extMap = {
-                      'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
-                      'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
-                      'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
-                      'application/pdf': '.pdf', 'application/zip': '.zip',
-                      'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
-                    };
-                    const ext = extMap[fileType] || '';
-                    finalFileName = ext ? `downloaded_file${ext}` : null;
+                    if (media.className === 'MessageMediaPhoto') {
+                      finalFileName = `photo_${index + 1}_${Date.now()}.jpg`;
+                    } else if (media.className === 'MessageMediaDocument') {
+                      const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
+                      const extMap = {
+                        'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+                        'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
+                        'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+                        'application/pdf': '.pdf', 'application/zip': '.zip',
+                        'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
+                      };
+                      const ext = extMap[fileType] || '';
+                      finalFileName = ext ? `document_${index + 1}${ext}` : null;
+                    }
                   }
                   
                   if (finalFileName) {
                     const newPath = path.join(outputDir, finalFileName);
                     fs.renameSync(filePath, newPath);
-                    downloadedFiles.push(newPath);
                     console.log(`✅ Downloaded: ${finalFileName} (${(stats.size/1024/1024).toFixed(2)}MB)`);
+                    return newPath;
                   } else {
-                    downloadedFiles.push(filePath);
                     console.log(`✅ Downloaded: ${path.basename(filePath)} (${(stats.size/1024/1024).toFixed(2)}MB)`);
+                    return filePath;
                   }
                 }
               }
             } catch (err) {
-              console.error('❌ Error downloading media:', err.message);
+              console.error(`❌ Error downloading file ${index + 1}:`, err.message);
+            }
+            
+            return null;
+          }
+
+          async function downloadAllMedia(message, outputDir) {
+            const downloadedFiles = [];
+            
+            // Collect all media from the message
+            const mediaList = [];
+            
+            // Check for single media
+            if (message.media) {
+              mediaList.push(message.media);
+            }
+            
+            // Check for album/media group (multiple media in one message)
+            if (message.message && message.message.includes('grouped_id')) {
+              // This is part of an album, but we need to get the actual media
+              console.log("📸 Detected album/grouped media");
+            }
+            
+            // Also check message.replyTo for forwarded media
+            if (message.replyTo && message.replyTo.replyToMsgId) {
+              try {
+                const repliedMsg = await client.getMessages(message.chatId, {
+                  ids: message.replyTo.replyToMsgId
+                });
+                if (repliedMsg[0] && repliedMsg[0].media) {
+                  mediaList.push(repliedMsg[0].media);
+                }
+              } catch (err) {
+                console.log("Could not fetch replied message:", err.message);
+              }
+            }
+            
+            if (mediaList.length === 0) {
+              console.log('⚠️ No media found in the post');
+              return downloadedFiles;
+            }
+            
+            console.log(`\n🎯 Found ${mediaList.length} media file(s) to download\n`);
+            
+            // Download each media
+            for (let i = 0; i < mediaList.length; i++) {
+              lastLoggedPercent = 0;
+              const filePath = await downloadSingleMedia(mediaList[i], outputDir, i, mediaList.length);
+              if (filePath) {
+                downloadedFiles.push(filePath);
+              }
+              // Small delay between downloads
+              if (i < mediaList.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
             }
             
             return downloadedFiles;
@@ -254,12 +301,14 @@ jobs:
               downloadsDir = path.join('/tmp', `telegram_${timestamp}`);
               fs.mkdirSync(downloadsDir, { recursive: true });
               
+              // Save message text
               if (message.text && message.text.length > 0) {
                 const textFile = path.join(downloadsDir, 'message_text.txt');
                 fs.writeFileSync(textFile, message.text);
                 console.log(`📝 Saved message text (${message.text.length} characters)`);
               }
               
+              // Download all media
               const downloadedFiles = await downloadAllMedia(message, downloadsDir);
               
               if (downloadedFiles.length === 0) {
@@ -277,6 +326,7 @@ jobs:
                 downloadedFiles.push(infoFile);
               }
               
+              // Save list of downloaded files
               const filesList = '/tmp/downloaded_files.txt';
               const allFiles = [];
               
@@ -286,16 +336,28 @@ jobs:
                 }
               }
               
+              // Also add message text if it exists and not already added
               const textFile = path.join(downloadsDir, 'message_text.txt');
               if (fs.existsSync(textFile) && fs.statSync(textFile).size > 0) {
-                allFiles.push(textFile);
+                let alreadyAdded = false;
+                for (const f of allFiles) {
+                  if (f === textFile) {
+                    alreadyAdded = true;
+                    break;
+                  }
+                }
+                if (!alreadyAdded) {
+                  allFiles.push(textFile);
+                }
               }
               
               fs.writeFileSync(filesList, allFiles.join('\n'));
               
+              const totalSizeMB = allFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0) / 1024 / 1024;
+              
               console.log(`\n📊 Summary:`);
               console.log(`   - Total files: ${allFiles.length}`);
-              console.log(`   - Total size: ${(allFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0) / 1024 / 1024).toFixed(2)}MB`);
+              console.log(`   - Total size: ${totalSizeMB.toFixed(2)}MB`);
               console.log(`   - Download directory: ${downloadsDir}`);
               
               // Write output for next steps
@@ -345,7 +407,7 @@ jobs:
           
           # Ensure exit code is 0 even if timeout error occurred but download succeeded
           DOWNLOAD_EXIT=$?
-          if [ $DOWNLOAD_EXIT -eq 0 ] || [ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]; then
+          if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]); then
             echo "Download completed successfully (exit code: $DOWNLOAD_EXIT)"
             exit 0
           else
@@ -366,7 +428,10 @@ jobs:
           # Debug: show what files exist
           echo ""
           echo "📁 Files in download directory:"
-          find "${BASE_DIR}" -type f 2>/dev/null || echo "No files found"
+          find "${BASE_DIR}" -type f 2>/dev/null | while read file; do
+            SIZE=$(stat -c%s "$file" | awk '{printf "%.2fMB", $1/1024/1024}')
+            echo "   - $(basename "$file") (${SIZE})"
+          done
           echo ""
           echo "📄 Downloaded files list:"
           cat /tmp/downloaded_files.txt 2>/dev/null || echo "No files list found"
@@ -504,7 +569,8 @@ jobs:
             echo "| Property | Value |"
             echo "|----------|-------|"
             echo "| **Source** | [${POST_URL}](${POST_URL}) |"
-            echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
+            echo "| **Total Files** | ${#VALID_FILES[@]} files |"
+            echo "| **Archive Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
             echo "| **Split Size** | ${SPLIT_SIZE_MB} MB per part |"
             echo "| **Status** | ✅ **Complete** |"
             echo ""
@@ -523,6 +589,7 @@ jobs:
             echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
             echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip"
             echo "3. **Extract** — all parts combine automatically"
+            echo "4. After extraction, you will find all downloaded files"
             echo ""
             echo "---"
             echo ""
