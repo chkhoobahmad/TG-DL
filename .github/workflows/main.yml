@@ -385,7 +385,6 @@ jobs:
         run: |
           if [ ! -f "/tmp/post_directory.txt" ]; then
             echo "❌ No download found!"
-            # Try to find directory manually
             POST_DIR=$(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)
             if [ -z "$POST_DIR" ]; then
               exit 1
@@ -408,7 +407,6 @@ jobs:
           
           echo "📦 Creating archive for: $CHANNEL_NAME/$POST_ID"
           
-          # Copy all files from post directory
           FILE_COUNT=0
           for FILE in "$POST_DIR"/*; do
             if [ -f "$FILE" ] && [ -s "$FILE" ]; then
@@ -426,13 +424,11 @@ jobs:
             exit 1
           fi
           
-          # Create zip archive
           cd "$BACKUP_DIR/$FOLDER_NAME"
           
           echo "   📀 Creating zip archive..."
           zip -r -9 "${POST_ID}.zip" ./* > /dev/null 2>&1
           
-          # Remove original files, keep only zip
           for FILE in *; do
             if [ -f "$FILE" ] && [ "$FILE" != "${POST_ID}.zip" ]; then
               rm -f "$FILE"
@@ -441,11 +437,9 @@ jobs:
           
           cd - > /dev/null
           
-          # Get archive size
           ARCHIVE_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${POST_ID}.zip" 2>/dev/null || echo 0)
           ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
           
-          # Create README
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="${GITHUB_REF_NAME}"
@@ -488,7 +482,6 @@ jobs:
           
           1. **Download** \`${POST_ID}.zip\`
           2. **Extract** with WinRAR, 7-Zip, or any zip tool
-          3. After extraction, you will find all files from this post
           
           ---
           
@@ -497,20 +490,19 @@ jobs:
           
           echo "   ✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
           
-          # Save backup directory path
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
           
           echo ""
           echo "✅ Archive created successfully!"
 
-      - name: Copy to downloads and update README
+      - name: Copy to downloads and update all READMEs
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
           # Create downloads directory
           mkdir -p downloads
           
-          # Copy archive to downloads
+          # Copy archive to downloads (merge with existing)
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             cp -r "$BACKUP_DIR"/* downloads/
             echo "✅ Copied archive to downloads folder"
@@ -519,19 +511,26 @@ jobs:
             exit 1
           fi
           
-          # Get folder name
-          FOLDER=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | head -1)
+          # Get ALL folders from downloads (existing + new)
+          # This is the key fix - get ALL folders, not just first one
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
           
-          if [ -z "$FOLDER" ]; then
-            echo "❌ No folder found in downloads!"
+          if [ -z "$FOLDERS" ]; then
+            echo "❌ No folders found in downloads!"
             exit 1
           fi
           
-          # Generate downloads/README.md
+          echo "📁 Found folders: $FOLDERS"
+          
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+          
           REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
           DATE=$(date '+%Y-%m-%d')
           
-          cat > downloads/README.md << EOF
+          # Generate downloads/README.md with ALL folders
+          cat > downloads/README.md << 'EOF'
           # 📥 Downloads from Telegram
           
           This folder contains downloaded posts from Telegram channels.
@@ -542,13 +541,34 @@ jobs:
           
           | # | Post | Size | Date |
           |---|------|------|------|
-          | 1 | [${FOLDER}](${REPO_URL}/${FOLDER}) | $(grep "Archive Size" downloads/$FOLDER/README.md | grep -oE '[0-9.]+ MB') | ${DATE} |
+          EOF
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              
+              # Extract size from post's README
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> downloads/README.md
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          cat >> downloads/README.md << 'EOF'
           
           ---
           
           ## 📖 How to use
           
-          1. Click on the post folder above
+          1. Click on any post folder above
           2. Download the zip file
           3. Extract to get all files from the post
           
@@ -557,9 +577,9 @@ jobs:
           *🛠️ Created by [avasam.ir](https://avasam.ir)*
           EOF
           
-          echo "✅ downloads/README.md created"
+          echo "✅ downloads/README.md updated with $((COUNTER - 1)) download(s)"
           
-          # Update root README.md
+          # Update root README.md with ALL folders
           ROOT_README="README.md"
           SECTION_TITLE="📥 دانلود‌های تلگرام"
           
@@ -576,7 +596,7 @@ jobs:
             sed -i '${/^$/d;}' "$ROOT_README"
           fi
           
-          # Add new section
+          # Add new section with ALL folders
           {
             echo ""
             echo "---"
@@ -585,12 +605,32 @@ jobs:
             echo ""
             echo "| # | Post | Size | Date |"
             echo "|---|------|------|------|"
-            echo "| 1 | [${FOLDER}](${REPO_URL}/${FOLDER}) | $(grep "Archive Size" downloads/$FOLDER/README.md | grep -oE '[0-9.]+ MB') | ${DATE} |"
+          } >> "$ROOT_README"
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          {
             echo ""
             echo "---"
           } >> "$ROOT_README"
           
-          echo "✅ Root README.md updated"
+          echo "✅ Root README.md updated with $((COUNTER - 1)) download(s)"
 
       - name: Commit & Push
         run: |
