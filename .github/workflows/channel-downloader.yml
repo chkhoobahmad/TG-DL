@@ -213,7 +213,6 @@ jobs:
             const messageDir = path.join(outputDir, String(messageId));
             fs.mkdirSync(messageDir, { recursive: true });
             
-            // Save message info
             const messageInfo = {
               id: message.id,
               date: message.date,
@@ -226,18 +225,16 @@ jobs:
             
             fs.writeFileSync(path.join(messageDir, 'message.json'), JSON.stringify(messageInfo, null, 2));
             
-            // Save message text
             if (message.text && message.text.length > 0) {
               fs.writeFileSync(path.join(messageDir, 'message.txt'), message.text);
             }
             
-            // Download media if exists and requested
             if (includeMedia && message.media) {
               let fileName = await getFileNameFromMedia(message.media, messageId, 0);
               let outputPath = path.join(messageDir, fileName);
               
               if (!path.extname(outputPath) || path.extname(outputPath) === '') {
-                const tempPath = path.join(messageDir, `temp`);
+                const tempPath = path.join(messageDir, 'temp');
                 try {
                   await downloadMediaFile(client, message.media, tempPath);
                   
@@ -269,7 +266,6 @@ jobs:
             
             downloadedMessages++;
             
-            // Progress update
             const percent = (downloadedMessages / total * 100);
             if (Math.floor(percent / 5) > Math.floor((downloadedMessages - 1) / total * 100 / 5)) {
               console.log(`   📊 ${percent.toFixed(1)}% (${downloadedMessages}/${total} messages) | Media: ${(totalMediaSize/1024/1024).toFixed(2)}MB`);
@@ -322,11 +318,9 @@ jobs:
               console.log(`📁 Channel Name: ${channelName}`);
               console.log(`📁 Fetching messages...\n`);
               
-              // Create output directory
               const outputDir = `/tmp/channel_export/${channelName}`;
               fs.mkdirSync(outputDir, { recursive: true });
               
-              // Get messages
               const messages = [];
               let offsetId = 0;
               let hasMore = true;
@@ -352,7 +346,6 @@ jobs:
                 }
               }
               
-              // Apply limit
               let finalMessages = messages;
               if (limit > 0 && messages.length > limit) {
                 finalMessages = messages.slice(0, limit);
@@ -361,7 +354,6 @@ jobs:
               totalMessages = finalMessages.length;
               console.log(`\n✅ Total messages to download: ${totalMessages}\n`);
               
-              // Save channel info
               const channelInfo = {
                 name: channelName,
                 url: channelUrl,
@@ -372,7 +364,6 @@ jobs:
               };
               fs.writeFileSync(path.join(outputDir, 'channel_info.json'), JSON.stringify(channelInfo, null, 2));
               
-              // Process each message
               console.log(`📥 Processing messages...\n`);
               
               for (let i = 0; i < finalMessages.length; i++) {
@@ -383,7 +374,6 @@ jobs:
               
               console.log(`\n`);
               
-              // Create summary
               const summary = {
                 channel: channelName,
                 totalMessages: totalMessages,
@@ -393,57 +383,44 @@ jobs:
               };
               fs.writeFileSync(path.join(outputDir, 'export_summary.json'), JSON.stringify(summary, null, 2));
               
-              // Create HTML index
-              let htmlContent = `<!DOCTYPE html>
-              <html>
-              <head>
-                <meta charset="UTF-8">
-                <title>${channelName} - Channel Export</title>
-                <style>
-                  body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
-                  .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
-                  .message { border-bottom: 1px solid #eee; padding: 15px; margin-bottom: 10px; }
-                  .message-id { color: #666; font-size: 12px; }
-                  .message-date { color: #999; font-size: 12px; }
-                  .message-text { margin-top: 10px; }
-                  .media { margin-top: 10px; }
-                  img, video { max-width: 100%; max-height: 300px; }
-                  h1 { color: #333; }
-                  .summary { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <h1>📱 ${channelName}</h1>
-                  <div class="summary">
-                    <strong>Export Summary:</strong><br>
-                    Total Messages: ${totalMessages}<br>
-                    Total Size: ${summary.totalSizeMB} MB<br>
-                    Export Date: ${new Date().toLocaleString()}<br>
-                    Media Included: ${includeMedia}
-                  </div>
-              `;
+              let htmlContent = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n'
+              htmlContent += `<title>${channelName} - Channel Export</title>\n`
+              htmlContent += '<style>\nbody { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }\n'
+              htmlContent += '.container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }\n'
+              htmlContent += '.message { border-bottom: 1px solid #eee; padding: 15px; margin-bottom: 10px; }\n'
+              htmlContent += '.message-id { color: #666; font-size: 12px; }\n'
+              htmlContent += '.message-date { color: #999; font-size: 12px; }\n'
+              htmlContent += '.message-text { margin-top: 10px; }\n'
+              htmlContent += '.media { margin-top: 10px; }\n'
+              htmlContent += 'img, video { max-width: 100%; max-height: 300px; }\n'
+              htmlContent += 'h1 { color: #333; }\n'
+              htmlContent += '.summary { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }\n'
+              htmlContent += '</style>\n</head>\n<body>\n<div class="container">\n'
+              htmlContent += `<h1>📱 ${channelName}</h1>\n`
+              htmlContent += `<div class="summary">\n<strong>Export Summary:</strong><br>\n`
+              htmlContent += `Total Messages: ${totalMessages}<br>\n`
+              htmlContent += `Total Size: ${summary.totalSizeMB} MB<br>\n`
+              htmlContent += `Export Date: ${new Date().toLocaleString()}<br>\n`
+              htmlContent += `Media Included: ${includeMedia}\n</div>\n`
               
               for (const msg of finalMessages) {
                 const messageDate = new Date(msg.date * 1000).toLocaleString();
-                htmlContent += `
-                  <div class="message">
-                    <div class="message-id">Message ID: ${msg.id}</div>
-                    <div class="message-date">${messageDate}</div>
-                    ${msg.text ? `<div class="message-text">${msg.text.replace(/\n/g, '<br>')}</div>` : ''}
-                    ${includeMedia && msg.media ? `<div class="media"><a href="${msg.id}/">View Media Files</a></div>` : ''}
-                  </div>
-                `;
+                htmlContent += `<div class="message">\n`
+                htmlContent += `<div class="message-id">Message ID: ${msg.id}</div>\n`
+                htmlContent += `<div class="message-date">${messageDate}</div>\n`
+                if (msg.text) {
+                  htmlContent += `<div class="message-text">${msg.text.replace(/\n/g, '<br>')}</div>\n`
+                }
+                if (includeMedia && msg.media) {
+                  htmlContent += `<div class="media"><a href="${msg.id}/">View Media Files</a></div>\n`
+                }
+                htmlContent += `</div>\n`
               }
               
-              htmlContent += `
-                </div>
-              </body>
-              </html>`;
+              htmlContent += '</div>\n</body>\n</html>'
               
               fs.writeFileSync(path.join(outputDir, 'index.html'), htmlContent);
               
-              // Save list of all message directories
               const messageDirs = finalMessages.map(m => path.join(outputDir, String(m.id)));
               fs.writeFileSync('/tmp/message_dirs.txt', messageDirs.join('\n'));
               fs.writeFileSync('/tmp/channel_export_dir.txt', outputDir);
@@ -522,7 +499,7 @@ jobs:
           echo "📦 Processing files for channel: $CHANNEL_NAME"
           echo ""
           
-          # First, split any large files (>45MB) into smaller chunks
+          # Split any large files (>45MB) into smaller chunks
           SPLIT_SIZE_MB=45
           LARGE_FILES=$(find "$EXPORT_DIR" -type f -size +45M 2>/dev/null)
           
@@ -535,7 +512,6 @@ jobs:
               FILE_DIR=$(dirname "$FILE")
               FILE_BASE=$(basename "$FILE")
               FILE_NAME="${FILE_BASE%.*}"
-              FILE_EXT="${FILE_BASE##*.}"
               
               cd "$FILE_DIR"
               
@@ -545,7 +521,7 @@ jobs:
               # Remove original large file
               rm -f "$FILE_BASE"
               
-              # Rename split files to indicate they belong together
+              # Rename split files
               for part in "${FILE_NAME}_split".zip*; do
                 if [ -f "$part" ]; then
                   NEW_NAME=$(echo "$part" | sed "s/_split//")
@@ -604,7 +580,7 @@ jobs:
           
           TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
           
-          # Create README
+          # Create README for the export
           REPO_OWNER="${{ github.repository_owner }}"
           REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="${GITHUB_REF_NAME}"
@@ -628,57 +604,57 @@ jobs:
           
           CHANNEL_URL="${{ github.event.inputs.channel_url }}"
           
-          cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOF
-          # 📱 Channel Export: ${CHANNEL_NAME}
-          
-          ---
-          
-          ## 📊 Export Information
-          
-          | Property | Value |
-          |----------|-------|
-          | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
-          | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
-          | **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |
-          | **Split Size** | 45 MB per part |
-          | **Status** | ✅ **Complete** |
-          
-          ---
-          
-          ## 🔗 Download Links
-          
-          | # | File | Link |
-          |---|------|------|
-          ${DOWNLOAD_LINKS_MD}
-          
-          ---
-          
-          ## 📖 How to Extract
-          
-          1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)
-          2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip
-          3. **Extract** — all parts combine automatically
-          4. Open \`index.html\` in your browser to browse messages
-          
-          ---
-          
-          ## 📁 Folder Structure After Extraction
-          
-          \`\`\`
-          ${CHANNEL_NAME}/
-          ├── channel_info.json      # Channel metadata
-          ├── export_summary.json    # Export statistics
-          ├── index.html            # Browse all messages
-          └── [message_id]/         # Individual messages
-              ├── message.json      # Message metadata
-              ├── message.txt       # Message text
-              └── media files       # Downloaded media (split if large)
-          \`\`\`
-          
-          ---
-          
-          *🛠️ Created by [avasam.ir](https://avasam.ir)*
-          EOF
+          {
+            echo "# 📱 Channel Export: ${CHANNEL_NAME}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📊 Export Information"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |"
+            echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |"
+            echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
+            echo "| **Split Size** | 45 MB per part |"
+            echo "| **Status** | ✅ **Complete** |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🔗 Download Links"
+            echo ""
+            echo "| # | File | Link |"
+            echo "|---|------|------|"
+            printf '%s' "${DOWNLOAD_LINKS_MD}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📖 How to Extract"
+            echo ""
+            echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
+            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip"
+            echo "3. **Extract** — all parts combine automatically"
+            echo "4. Open \`index.html\` in your browser to browse messages"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📁 Folder Structure After Extraction"
+            echo ""
+            echo '```'
+            echo "${CHANNEL_NAME}/"
+            echo "├── channel_info.json      # Channel metadata"
+            echo "├── export_summary.json    # Export statistics"
+            echo "├── index.html            # Browse all messages"
+            echo "└── [message_id]/         # Individual messages"
+            echo "    ├── message.json      # Message metadata"
+            echo "    ├── message.txt       # Message text"
+            echo "    └── media files       # Downloaded media"
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
+          } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
           
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
           
@@ -689,136 +665,91 @@ jobs:
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
-          # Create downloads directory if it doesn't exist
+          # Create downloads directory
           mkdir -p downloads
           
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            # Remove old channel folders if exists
-            CHANNEL_NAME=$(basename "$BACKUP_DIR"/*/ 2>/dev/null | head -1)
-            rm -rf downloads/${CHANNEL_NAME} 2>/dev/null || true
-            rm -rf downloads/${CHANNEL_NAME}_channel_export 2>/dev/null || true
-            
             # Copy new files
             cp -r "$BACKUP_DIR"/* downloads/
             echo "✅ Copied archive to downloads folder"
-            
-            # Show what was copied
             echo "Contents of downloads:"
             ls -la downloads/
           else
-            echo "❌ Backup directory is empty or doesn't exist!"
-            echo "Backup directory: $BACKUP_DIR"
-            ls -la "$BACKUP_DIR" 2>/dev/null || echo "Directory not found"
+            echo "❌ Backup directory is empty!"
             exit 1
           fi
           
           # Get ALL folders from downloads
           FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
           
-          if [ -z "$FOLDERS" ]; then
-            echo "❌ No folders found in downloads!"
-            echo "Creating initial README..."
-            
-            # Create initial README if no folders exist
-            cat > downloads/README.md << 'EOF'
-            # 📥 Downloads from Telegram
-            
-            This folder contains exported channels and downloaded posts from Telegram.
-            
-            ---
-            
-            ## 📁 Available Downloads
-            
-            No downloads yet. Use the workflows to download content from Telegram.
-            
-            ---
-            
-            ## 📖 How to use
-            
-            1. Go to Actions tab
-            2. Select "Download from Telegram Post" or "Download Entire Channel History"
-            3. Click "Run workflow"
-            4. Enter the Telegram link
-            5. Wait for completion
-            
-            ---
-            
-            *🛠️ Created by [avasam.ir](https://avasam.ir)*
-            EOF
-            
-            echo "✅ Created initial downloads/README.md"
-          else
-            echo "📁 Found folders: $FOLDERS"
-            
-            urlencode() {
-              python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-            }
-            
-            REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
-            DATE=$(date '+%Y-%m-%d')
-            
-            # Generate downloads/README.md with all folders
-            cat > downloads/README.md << 'EOF'
-            # 📥 Downloads from Telegram
-            
-            This folder contains exported channels and downloaded posts from Telegram.
-            
-            ---
-            
-            ## 📁 Available Downloads
-            
-            | # | Item | Type | Size | Date |
-            |---|------|------|------|------|
-            EOF
-            
-            COUNTER=1
-            for FOLDER in $FOLDERS; do
-              if [ -n "$FOLDER" ]; then
-                FOLDER_ENCODED=$(urlencode "${FOLDER}")
-                SIZE="Unknown"
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+          
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+          DATE=$(date '+%Y-%m-%d')
+          
+          # Generate downloads/README.md
+          cat > downloads/README.md << 'EOF'
+          # 📥 Downloads from Telegram
+          
+          This folder contains exported channels and downloaded posts from Telegram.
+          
+          ---
+          
+          ## 📁 Available Downloads
+          
+          | # | Item | Type | Size | Date |
+          |---|------|------|------|------|
+          EOF
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              TYPE="Channel Export"
+              
+              if [[ "$FOLDER" == *_channel_export ]]; then
                 TYPE="Channel Export"
-                
-                if [[ "$FOLDER" == *_channel_export ]]; then
-                  TYPE="Channel Export"
-                else
-                  TYPE="Single Post"
-                fi
-                
-                if [ -f "downloads/$FOLDER/README.md" ]; then
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                  if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                    SIZE="${BASH_REMATCH[1]} MB"
-                  fi
-                fi
-                
-                echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
-                COUNTER=$((COUNTER + 1))
+              else
+                TYPE="Single Post"
               fi
-            done
-            
-            cat >> downloads/README.md << 'EOF'
-            
-            ---
-            
-            ## 📖 How to use
-            
-            ### For Channel Exports:
-            1. Download all parts of the zip file
-            2. Extract the first part (.zip) to get the complete folder
-            3. Open `index.html` in your browser to browse all messages
-            
-            ### For Single Posts:
-            1. Click on the post folder above
-            2. Download the zip file
-            3. Extract to get all files
-            
-            ---
-            
-            *🛠️ Created by [avasam.ir](https://avasam.ir)*
-            EOF
-            
-            echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
-          fi
+              
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          cat >> downloads/README.md << 'EOF'
+          
+          ---
+          
+          ## 📖 How to use
+          
+          ### For Channel Exports:
+          1. Download all parts of the zip file
+          2. Extract the first part (.zip) to get the complete folder
+          3. Open `index.html` in your browser to browse all messages
+          
+          ### For Single Posts:
+          1. Click on the post folder above
+          2. Download the zip file
+          3. Extract to get all files
+          
+          ---
+          
+          *🛠️ Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          
+          echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
           
           # Update root README.md
           ROOT_README="README.md"
@@ -839,52 +770,47 @@ jobs:
             sed -i '${/^$/d;}' "$ROOT_README"
           fi
           
-          # Add new section only if there are folders
-          if [ -n "$FOLDERS" ]; then
-            {
-              echo ""
-              echo "---"
-              echo ""
-              echo "## $SECTION_TITLE"
-              echo ""
-              echo "| # | Item | Type | Size | Date |"
-              echo "|---|------|------|------|------|"
-            } >> "$ROOT_README"
-            
-            COUNTER=1
-            for FOLDER in $FOLDERS; do
-              if [ -n "$FOLDER" ]; then
-                FOLDER_ENCODED=$(urlencode "${FOLDER}")
-                SIZE="Unknown"
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            echo "| # | Item | Type | Size | Date |"
+            echo "|---|------|------|------|------|"
+          } >> "$ROOT_README"
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              TYPE="Channel Export"
+              
+              if [[ "$FOLDER" == *_channel_export ]]; then
                 TYPE="Channel Export"
-                
-                if [[ "$FOLDER" == *_channel_export ]]; then
-                  TYPE="Channel Export"
-                else
-                  TYPE="Single Post"
-                fi
-                
-                if [ -f "downloads/$FOLDER/README.md" ]; then
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                  if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                    SIZE="${BASH_REMATCH[1]} MB"
-                  fi
-                fi
-                
-                echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
-                COUNTER=$((COUNTER + 1))
+              else
+                TYPE="Single Post"
               fi
-            done
-            
-            {
-              echo ""
-              echo "---"
-            } >> "$ROOT_README"
-            
-            echo "✅ Root README.md updated"
-          else
-            echo "No folders to add to root README"
-          fi
+              
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          {
+            echo ""
+            echo "---"
+          } >> "$ROOT_README"
+          
+          echo "✅ Root README.md updated"
 
       - name: Commit & Push
         run: |
@@ -892,22 +818,6 @@ jobs:
           
           # Ensure downloads directory exists
           mkdir -p downloads
-          
-          # Check if there are any files to commit
-          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
-            echo "⚠️ No files to commit, but ensuring README exists..."
-            # Create a placeholder README if nothing exists
-            if [ ! -f "downloads/README.md" ]; then
-              cat > downloads/README.md << 'EOF'
-              # 📥 Downloads from Telegram
-              
-              No downloads yet. Use the workflows to download content from Telegram.
-              
-              *🛠️ Created by [avasam.ir](https://avasam.ir)*
-              EOF
-              git add downloads/README.md
-            fi
-          fi
           
           # Add all files
           git add -f downloads/
