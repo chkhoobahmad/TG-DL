@@ -689,18 +689,26 @@ jobs:
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
+          # Create downloads directory if it doesn't exist
           mkdir -p downloads
           
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            # Remove old channel folder if exists
+            # Remove old channel folders if exists
+            CHANNEL_NAME=$(basename "$BACKUP_DIR"/*/ 2>/dev/null | head -1)
             rm -rf downloads/${CHANNEL_NAME} 2>/dev/null || true
             rm -rf downloads/${CHANNEL_NAME}_channel_export 2>/dev/null || true
             
             # Copy new files
             cp -r "$BACKUP_DIR"/* downloads/
             echo "✅ Copied archive to downloads folder"
+            
+            # Show what was copied
+            echo "Contents of downloads:"
+            ls -la downloads/
           else
-            echo "❌ Backup directory is empty!"
+            echo "❌ Backup directory is empty or doesn't exist!"
+            echo "Backup directory: $BACKUP_DIR"
+            ls -la "$BACKUP_DIR" 2>/dev/null || echo "Directory not found"
             exit 1
           fi
           
@@ -709,77 +717,108 @@ jobs:
           
           if [ -z "$FOLDERS" ]; then
             echo "❌ No folders found in downloads!"
-            exit 1
-          fi
-          
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
-          
-          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
-          DATE=$(date '+%Y-%m-%d')
-          
-          # Generate downloads/README.md
-          cat > downloads/README.md << 'EOF'
-          # 📥 Downloads from Telegram
-          
-          This folder contains exported channels and downloaded posts from Telegram.
-          
-          ---
-          
-          ## 📁 Available Downloads
-          
-          | # | Item | Type | Size | Date |
-          |---|------|------|------|------|
-          EOF
-          
-          COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
-              SIZE="Unknown"
-              TYPE="Channel Export"
-              
-              if [[ "$FOLDER" == *_channel_export ]]; then
+            echo "Creating initial README..."
+            
+            # Create initial README if no folders exist
+            cat > downloads/README.md << 'EOF'
+            # 📥 Downloads from Telegram
+            
+            This folder contains exported channels and downloaded posts from Telegram.
+            
+            ---
+            
+            ## 📁 Available Downloads
+            
+            No downloads yet. Use the workflows to download content from Telegram.
+            
+            ---
+            
+            ## 📖 How to use
+            
+            1. Go to Actions tab
+            2. Select "Download from Telegram Post" or "Download Entire Channel History"
+            3. Click "Run workflow"
+            4. Enter the Telegram link
+            5. Wait for completion
+            
+            ---
+            
+            *🛠️ Created by [avasam.ir](https://avasam.ir)*
+            EOF
+            
+            echo "✅ Created initial downloads/README.md"
+          else
+            echo "📁 Found folders: $FOLDERS"
+            
+            urlencode() {
+              python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+            }
+            
+            REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+            DATE=$(date '+%Y-%m-%d')
+            
+            # Generate downloads/README.md with all folders
+            cat > downloads/README.md << 'EOF'
+            # 📥 Downloads from Telegram
+            
+            This folder contains exported channels and downloaded posts from Telegram.
+            
+            ---
+            
+            ## 📁 Available Downloads
+            
+            | # | Item | Type | Size | Date |
+            |---|------|------|------|------|
+            EOF
+            
+            COUNTER=1
+            for FOLDER in $FOLDERS; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                SIZE="Unknown"
                 TYPE="Channel Export"
-              else
-                TYPE="Single Post"
-              fi
-              
-              if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                  SIZE="${BASH_REMATCH[1]} MB"
+                
+                if [[ "$FOLDER" == *_channel_export ]]; then
+                  TYPE="Channel Export"
+                else
+                  TYPE="Single Post"
                 fi
+                
+                if [ -f "downloads/$FOLDER/README.md" ]; then
+                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
+                  if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                    SIZE="${BASH_REMATCH[1]} MB"
+                  fi
+                fi
+                
+                echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
+                COUNTER=$((COUNTER + 1))
               fi
-              
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
-              COUNTER=$((COUNTER + 1))
-            fi
-          done
-          
-          cat >> downloads/README.md << 'EOF'
-          
-          ---
-          
-          ## 📖 How to use
-          
-          ### For Channel Exports:
-          1. Download all parts of the zip file
-          2. Extract the first part (.zip) to get the complete folder
-          3. Open `index.html` in your browser to browse all messages
-          
-          ### For Single Posts:
-          1. Click on the post folder above
-          2. Download the zip file
-          3. Extract to get all files
-          
-          ---
-          
-          *🛠️ Created by [avasam.ir](https://avasam.ir)*
-          EOF
-          
-          echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
+            done
+            
+            cat >> downloads/README.md << 'EOF'
+            
+            ---
+            
+            ## 📖 How to use
+            
+            ### For Channel Exports:
+            1. Download all parts of the zip file
+            2. Extract the first part (.zip) to get the complete folder
+            3. Open `index.html` in your browser to browse all messages
+            
+            ### For Single Posts:
+            1. Click on the post folder above
+            2. Download the zip file
+            3. Extract to get all files
+            
+            ---
+            
+            *🛠️ Created by [avasam.ir](https://avasam.ir)*
+            EOF
+            
+            echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
+          fi
           
           # Update root README.md
           ROOT_README="README.md"
@@ -790,64 +829,87 @@ jobs:
             echo "" >> "$ROOT_README"
             echo "دانلود خودکار کانال‌ها و پست‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
             echo "" >> "$ROOT_README"
+            echo "---" >> "$ROOT_README"
+            echo "" >> "$ROOT_README"
           fi
           
+          # Remove old section if exists
           if grep -q "$SECTION_TITLE" "$ROOT_README"; then
             sed -i "/$SECTION_TITLE/,/^---$/d" "$ROOT_README"
             sed -i '${/^$/d;}' "$ROOT_README"
           fi
           
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "## $SECTION_TITLE"
-            echo ""
-            echo "| # | Item | Type | Size | Date |"
-            echo "|---|------|------|------|------|"
-          } >> "$ROOT_README"
-          
-          COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
-              SIZE="Unknown"
-              TYPE="Channel Export"
-              
-              if [[ "$FOLDER" == *_channel_export ]]; then
+          # Add new section only if there are folders
+          if [ -n "$FOLDERS" ]; then
+            {
+              echo ""
+              echo "---"
+              echo ""
+              echo "## $SECTION_TITLE"
+              echo ""
+              echo "| # | Item | Type | Size | Date |"
+              echo "|---|------|------|------|------|"
+            } >> "$ROOT_README"
+            
+            COUNTER=1
+            for FOLDER in $FOLDERS; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                SIZE="Unknown"
                 TYPE="Channel Export"
-              else
-                TYPE="Single Post"
-              fi
-              
-              if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                  SIZE="${BASH_REMATCH[1]} MB"
+                
+                if [[ "$FOLDER" == *_channel_export ]]; then
+                  TYPE="Channel Export"
+                else
+                  TYPE="Single Post"
                 fi
+                
+                if [ -f "downloads/$FOLDER/README.md" ]; then
+                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
+                  if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                    SIZE="${BASH_REMATCH[1]} MB"
+                  fi
+                fi
+                
+                echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+                COUNTER=$((COUNTER + 1))
               fi
-              
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
-              COUNTER=$((COUNTER + 1))
-            fi
-          done
-          
-          {
-            echo ""
-            echo "---"
-          } >> "$ROOT_README"
-          
-          echo "✅ Root README.md updated"
+            done
+            
+            {
+              echo ""
+              echo "---"
+            } >> "$ROOT_README"
+            
+            echo "✅ Root README.md updated"
+          else
+            echo "No folders to add to root README"
+          fi
 
       - name: Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
+          # Ensure downloads directory exists
+          mkdir -p downloads
+          
+          # Check if there are any files to commit
           if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
-            echo "❌ No files to commit!"
-            exit 1
+            echo "⚠️ No files to commit, but ensuring README exists..."
+            # Create a placeholder README if nothing exists
+            if [ ! -f "downloads/README.md" ]; then
+              cat > downloads/README.md << 'EOF'
+              # 📥 Downloads from Telegram
+              
+              No downloads yet. Use the workflows to download content from Telegram.
+              
+              *🛠️ Created by [avasam.ir](https://avasam.ir)*
+              EOF
+              git add downloads/README.md
+            fi
           fi
           
+          # Add all files
           git add -f downloads/
           git add README.md
           
