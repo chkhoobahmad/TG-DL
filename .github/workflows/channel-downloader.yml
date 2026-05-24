@@ -220,7 +220,6 @@ jobs:
               fs.writeFileSync(path.join(messageDir, 'message.txt'), message.text);
             }
             
-            // Always download media
             if (message.media) {
               let fileName = await getFileNameFromMedia(message.media, messageId, 0);
               let outputPath = path.join(messageDir, fileName);
@@ -454,7 +453,7 @@ jobs:
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Process Output Based on Type
+      - name: Split Large Files in Channel Directory
         run: |
           if [ ! -f "/tmp/channel_export_dir.txt" ]; then
             echo "❌ No export found!"
@@ -462,6 +461,64 @@ jobs:
           fi
           
           EXPORT_DIR=$(cat /tmp/channel_export_dir.txt)
+          CHANNEL_NAME=$(basename "$EXPORT_DIR")
+          
+          if [ ! -d "$EXPORT_DIR" ]; then
+            echo "❌ Export directory not found: $EXPORT_DIR"
+            exit 1
+          fi
+          
+          echo "📦 Processing channel: $CHANNEL_NAME"
+          echo "🔪 Splitting files larger than 45MB..."
+          
+          SPLIT_SIZE_MB=45
+          LARGE_FILES=$(find "$EXPORT_DIR" -type f -size +45M 2>/dev/null)
+          
+          if [ -n "$LARGE_FILES" ]; then
+            echo "$LARGE_FILES" | while read -r FILE; do
+              FILE_SIZE=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
+              echo "   🔪 Splitting: $(basename "$FILE") (${FILE_SIZE})"
+              
+              FILE_DIR=$(dirname "$FILE")
+              FILE_BASE=$(basename "$FILE")
+              FILE_NAME="${FILE_BASE%.*}"
+              
+              cd "$FILE_DIR"
+              
+              # Create split zip archive for this file
+              zip -s ${SPLIT_SIZE_MB}m "${FILE_NAME}_split.zip" "$FILE_BASE" > /dev/null 2>&1
+              
+              # Remove original large file
+              rm -f "$FILE_BASE"
+              
+              # Rename split files
+              for part in "${FILE_NAME}_split".zip*; do
+                if [ -f "$part" ]; then
+                  NEW_NAME=$(echo "$part" | sed "s/_split//")
+                  mv "$part" "$NEW_NAME"
+                fi
+              done
+              
+              cd - > /dev/null
+              echo "      ✅ Split into multiple ${SPLIT_SIZE_MB}MB parts"
+            done
+          else
+            echo "   ✅ No files larger than 45MB found"
+          fi
+          
+          # Save the processed directory path
+          echo "$EXPORT_DIR" > /tmp/processed_export_dir.txt
+          echo ""
+          echo "✅ Large files split completed"
+
+      - name: Process Output Based on Type
+        run: |
+          if [ ! -f "/tmp/processed_export_dir.txt" ]; then
+            echo "❌ No processed export found!"
+            exit 1
+          fi
+          
+          EXPORT_DIR=$(cat /tmp/processed_export_dir.txt)
           CHANNEL_NAME=$(basename "$EXPORT_DIR")
           OUTPUT_TYPE="${{ github.event.inputs.output_type }}"
           
@@ -536,102 +593,103 @@ jobs:
             
             CHANNEL_URL="${{ github.event.inputs.channel_url }}"
             
-            {
-              echo "# 📱 Channel Export: ${CHANNEL_NAME} (ZIP Archive)"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📊 Export Information"
-              echo ""
-              echo "| Property | Value |"
-              echo "|----------|-------|"
-              echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |"
-              echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |"
-              echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
-              echo "| **Split Size** | 45 MB per part |"
-              echo "| **Status** | ✅ **Complete** |"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 🔗 Download Links"
-              echo ""
-              echo "| # | File | Link |"
-              echo "|---|------|------|"
-              printf '%s' "${DOWNLOAD_LINKS_MD}"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📖 How to Extract"
-              echo ""
-              echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
-              echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip"
-              echo "3. **Extract** — all parts combine automatically"
-              echo "4. Open \`index.html\` in your browser to browse messages"
-              echo ""
-              echo "---"
-              echo ""
-              echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-            } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
+            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOT
+            # 📱 Channel Export: ${CHANNEL_NAME} (ZIP Archive)
+            
+            ---
+            
+            ## 📊 Export Information
+            
+            | Property | Value |
+            |----------|-------|
+            | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
+            | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
+            | **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |
+            | **Split Size** | 45 MB per part |
+            | **Status** | ✅ **Complete** |
+            
+            ---
+            
+            ## 🔗 Download Links
+            
+            | # | File | Link |
+            |---|------|------|
+            ${DOWNLOAD_LINKS_MD}
+            
+            ---
+            
+            ## 📖 How to Extract
+            
+            1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)
+            2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip
+            3. **Extract** — all parts combine automatically
+            4. Open \`index.html\` in your browser to browse messages
+            
+            ---
+            
+            *🛠️ Created by [avasam.ir](https://avasam.ir)*
+            EOT
             
             echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
             echo "✅ ZIP archive created (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB total)"
             
           else
-            # Normal output - just copy the folder structure
-            echo "📁 Using normal folder structure output..."
+            # Normal output - copy the folder structure with already split files
+            echo "📁 Using normal folder structure output (files already split)..."
             
-            # Copy export directory directly
             FOLDER_NAME="$CHANNEL_NAME"
             mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
             cp -r "$EXPORT_DIR"/* "$BACKUP_DIR/$FOLDER_NAME/"
             
+            # Count files and size
+            TOTAL_FILES=$(find "$EXPORT_DIR" -type f | wc -l)
+            TOTAL_SIZE=$(du -sh "$EXPORT_DIR" | cut -f1)
+            
             # Create README for normal output
             CHANNEL_URL="${{ github.event.inputs.channel_url }}"
-            TOTAL_SIZE=$(du -sh "$EXPORT_DIR" | cut -f1)
-            TOTAL_FILES=$(find "$EXPORT_DIR" -type f | wc -l)
             
-            {
-              echo "# 📱 Channel Export: ${CHANNEL_NAME}"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📊 Export Information"
-              echo ""
-              echo "| Property | Value |"
-              echo "|----------|-------|"
-              echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |"
-              echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |"
-              echo "| **Total Files** | ${TOTAL_FILES} files |"
-              echo "| **Total Size** | ${TOTAL_SIZE} |"
-              echo "| **Status** | ✅ **Complete** |"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📁 Folder Structure"
-              echo ""
-              echo '```'
-              echo "${CHANNEL_NAME}/"
-              echo "├── channel_info.json      # Channel metadata"
-              echo "├── export_summary.json    # Export statistics"
-              echo "├── index.html            # Browse all messages"
-              echo "└── [message_id]/         # Individual messages"
-              echo "    ├── message.json      # Message metadata"
-              echo "    ├── message.txt       # Message text"
-              echo "    └── media files       # Downloaded media"
-              echo '```'
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📖 How to Browse"
-              echo ""
-              echo "1. Navigate into the \`${CHANNEL_NAME}\` folder"
-              echo "2. Open \`index.html\` in your browser"
-              echo "3. Click on any message ID to view its media files"
-              echo ""
-              echo "---"
-              echo ""
-              echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-            } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
+            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOT
+            # 📱 Channel Export: ${CHANNEL_NAME}
+            
+            ---
+            
+            ## 📊 Export Information
+            
+            | Property | Value |
+            |----------|-------|
+            | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
+            | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
+            | **Total Files** | ${TOTAL_FILES} files |
+            | **Total Size** | ${TOTAL_SIZE} |
+            | **Status** | ✅ **Complete** |
+            
+            ---
+            
+            ## 📁 Folder Structure
+            
+            \`\`\`
+            ${CHANNEL_NAME}/
+            ├── channel_info.json      # Channel metadata
+            ├── export_summary.json    # Export statistics
+            ├── index.html            # Browse all messages
+            └── [message_id]/         # Individual messages
+                ├── message.json      # Message metadata
+                ├── message.txt       # Message text
+                └── media files       # Downloaded media (split if >45MB)
+            \`\`\`
+            
+            ---
+            
+            ## 📖 How to Browse
+            
+            1. Navigate into the \`${CHANNEL_NAME}\` folder
+            2. Open \`index.html\` in your browser
+            3. Click on any message ID to view its media files
+            
+            ---
+            
+            *🛠️ Created by [avasam.ir](https://avasam.ir)*
+            EOT
             
             echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
             echo "✅ Normal folder structure created (${TOTAL_SIZE}, ${TOTAL_FILES} files)"
@@ -703,7 +761,7 @@ jobs:
                 else
                   SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB|[0-9.]+\ [KMGT]?B ]]; then
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB || "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
                   SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B|[0-9.]+ MB' | head -1)
                 fi
               fi
@@ -728,6 +786,7 @@ jobs:
           1. Navigate into the channel folder
           2. Open `index.html` in your browser to browse messages
           3. Each message has its own folder with text and media files
+          4. Files larger than 45MB are automatically split into parts
           
           ---
           
@@ -782,7 +841,7 @@ jobs:
                 else
                   SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB|[0-9.]+\ [KMGT]?B ]]; then
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB || "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
                   SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B|[0-9.]+ MB' | head -1)
                 fi
               fi
