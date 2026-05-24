@@ -90,7 +90,7 @@ jobs:
           git config --global http.maxRequestBuffer 100M
           git config --global core.compression 0
           git config --global pack.windowMemory 256m
-          git config --global pack.packSizeLimit 100m
+          git config --global pack.packSizeLimit 50m
           git config --global pack.threads 1
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
@@ -501,7 +501,7 @@ jobs:
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Create ZIP Archive of Channel Export
+      - name: Create Split ZIP Archive of Channel Export
         run: |
           if [ ! -f "/tmp/channel_export_dir.txt" ]; then
             echo "❌ No export found!"
@@ -519,21 +519,41 @@ jobs:
           BACKUP_DIR="/tmp/backup_$$"
           mkdir -p "$BACKUP_DIR"
           
-          echo "📦 Creating archive for channel: $CHANNEL_NAME"
+          echo "📦 Creating split archive for channel: $CHANNEL_NAME"
           
           # Copy entire export directory
           cp -r "$EXPORT_DIR" "$BACKUP_DIR/"
           
           cd "$BACKUP_DIR"
           
-          # Create zip archive
+          # Create split zip archive (45MB parts)
           ARCHIVE_NAME="${CHANNEL_NAME}_channel_export"
-          echo "   📀 Creating zip archive (this may take a while)..."
-          zip -r -9 "${ARCHIVE_NAME}.zip" "$CHANNEL_NAME" > /dev/null 2>&1
+          SPLIT_SIZE_MB=45
           
-          # Get archive size
-          ARCHIVE_SIZE=$(stat -c%s "${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
-          ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
+          echo "   📀 Creating split archive (${SPLIT_SIZE_MB}MB per part)..."
+          zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_NAME}.zip" "$CHANNEL_NAME" > /dev/null 2>&1
+          
+          # Create folder for split parts
+          FOLDER_NAME="${CHANNEL_NAME}_channel_export"
+          mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+          
+          # Move all parts to folder
+          mv ${ARCHIVE_NAME}.zip* "$BACKUP_DIR/$FOLDER_NAME/" 2>/dev/null || true
+          
+          cd - > /dev/null
+          
+          # Count parts and calculate total size
+          LINK_NUM=0
+          TOTAL_ARCHIVE_SIZE=0
+          
+          for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
+            [ -f "$part_file" ] || continue
+            PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+            TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
+            LINK_NUM=$((LINK_NUM + 1))
+          done
+          
+          TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
           
           # Create README
           REPO_OWNER="${{ github.repository_owner }}"
@@ -544,13 +564,19 @@ jobs:
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          FOLDER_NAME="${CHANNEL_NAME}_channel_export"
-          mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-          mv "${ARCHIVE_NAME}.zip" "$BACKUP_DIR/$FOLDER_NAME/"
-          
           FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-          FILE_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
-          RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+          DOWNLOAD_LINKS_MD=""
+          LINK_NUM=0
+          
+          for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
+            [ -f "$part_file" ] || continue
+            PART_BASENAME=$(basename "$part_file")
+            PART_ENCODED=$(urlencode "${PART_BASENAME}")
+            RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+            LINK_NUM=$((LINK_NUM + 1))
+            DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+          done
+          
           CHANNEL_URL="${{ github.event.inputs.channel_url }}"
           
           cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOF
@@ -564,25 +590,26 @@ jobs:
           |----------|-------|
           | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
           | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
-          | **Archive Size** | ${ARCHIVE_SIZE_MB} MB |
+          | **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |
+          | **Split Size** | 45 MB per part |
           | **Status** | ✅ **Complete** |
           
           ---
           
-          ## 🔗 Download Link
+          ## 🔗 Download Links
           
-          | File | Link |
-          |------|------|
-          | \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |
+          | # | File | Link |
+          |---|------|------|
+          ${DOWNLOAD_LINKS_MD}
           
           ---
           
           ## 📖 How to Extract
           
-          1. **Download** \`${ARCHIVE_NAME}.zip\`
-          2. **Extract** with WinRAR, 7-Zip, or any zip tool
-          3. Open \`index.html\` in your browser to browse messages
-          4. Each message is in its own folder with ID as name
+          1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)
+          2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip
+          3. **Extract** — all parts combine automatically
+          4. Open \`index.html\` in your browser to browse messages
           
           ---
           
@@ -604,12 +631,10 @@ jobs:
           *🛠️ Created by [avasam.ir](https://avasam.ir)*
           EOF
           
-          cd - > /dev/null
-          
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
           
           echo ""
-          echo "✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
+          echo "✅ Split archive created (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB total)"
 
       - name: Copy to downloads and update READMEs
         run: |
@@ -668,7 +693,7 @@ jobs:
               fi
               
               if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
@@ -686,13 +711,12 @@ jobs:
           ## 📖 How to use
           
           ### For Channel Exports:
-          1. Download the zip file
-          2. Extract to a folder
-          3. Open `index.html` in your browser
-          4. Browse all messages with their media
+          1. Download all parts of the zip file
+          2. Extract the first part (.zip) to get the complete folder
+          3. Open `index.html` in your browser to browse all messages
           
           ### For Single Posts:
-          1. Click on the post folder
+          1. Click on the post folder above
           2. Download the zip file
           3. Extract to get all files
           
@@ -743,7 +767,7 @@ jobs:
               fi
               
               if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
