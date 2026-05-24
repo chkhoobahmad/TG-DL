@@ -1,4 +1,4 @@
-name: ⬇️ Download Entire Channel History
+name: ⬇️ Download Entire Channel History (No LFS)
 
 on:
   workflow_dispatch:
@@ -67,38 +67,13 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-
-      - name: Setup Git LFS
+          
+      - name: Remove Git LFS configuration
         run: |
-          git lfs install
-          git lfs track "*.mp4"
-          git lfs track "*.mkv"
-          git lfs track "*.avi"
-          git lfs track "*.mov"
-          git lfs track "*.zip"
-          git lfs track "*.z01"
-          git lfs track "*.z02"
-          git lfs track "*.z03"
-          git lfs track "*.z04"
-          git lfs track "*.z05"
-          git lfs track "*.z06"
-          git lfs track "*.z07"
-          git lfs track "*.z08"
-          git lfs track "*.z09"
-          git lfs track "*.z10"
-          git lfs track "*.z11"
-          git lfs track "*.z12"
-          git lfs track "*.z13"
-          git lfs track "*.z14"
-          git lfs track "*.z15"
-          git lfs track "*.z16"
-          git lfs track "*.z17"
-          git lfs track "*.z18"
-          git lfs track "*.z19"
-          git lfs track "*.z20"
-          git add .gitattributes
-          git commit -m "Configure Git LFS for media files" || true
-          git push origin HEAD:"${GITHUB_REF_NAME}" || true
+          # Remove .gitattributes if exists
+          rm -f .gitattributes
+          # Uninstall LFS
+          git lfs uninstall || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -111,7 +86,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip curl bc file jq
 
-      - name: Configure Git for Large Files
+      - name: Configure Git
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.maxRequestBuffer 100M
@@ -142,7 +117,6 @@ jobs:
           const stringSession = process.env.STRING_SESSION;
           const channelUrl = process.env.CHANNEL_URL;
 
-          let lastLoggedPercent = 0;
           let totalMessages = 0;
           let downloadedMessages = 0;
           let totalMediaSize = 0;
@@ -300,8 +274,7 @@ jobs:
             
             try {
               console.log('🚀 Connecting to Telegram...');
-              console.log(`📌 Channel: ${channelUrl}`);
-              console.log(`📌 Downloading all messages with media\n`);
+              console.log(`📌 Channel: ${channelUrl}\n`);
               
               const session = new StringSession(stringSession);
               client = new TelegramClient(session, apiId, apiHash, {
@@ -485,7 +458,7 @@ jobs:
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Split Large Files in Channel Directory
+      - name: Split Large Files (45MB parts - Git Friendly)
         run: |
           if [ ! -f "/tmp/channel_export_dir.txt" ]; then
             echo "❌ No export found!"
@@ -501,10 +474,10 @@ jobs:
           fi
           
           echo "📦 Processing channel: $CHANNEL_NAME"
-          echo "🔪 Splitting files larger than 45MB..."
+          echo "🔪 Splitting files into 45MB parts (Git compatible)..."
           
-          SPLIT_SIZE_MB=45
-          LARGE_FILES=$(find "$EXPORT_DIR" -type f -size +45M 2>/dev/null)
+          SPLIT_SIZE_MB=44  # استفاده از 44 مگابایت برای اطمینان از عدم عبور از محدودیت
+          LARGE_FILES=$(find "$EXPORT_DIR" -type f -size +44M 2>/dev/null)
           
           if [ -n "$LARGE_FILES" ]; then
             echo "$LARGE_FILES" | while read -r FILE; do
@@ -518,549 +491,137 @@ jobs:
               cd "$FILE_DIR"
               
               # Create split zip archive for this file
-              zip -s ${SPLIT_SIZE_MB}m "${FILE_NAME}_split.zip" "$FILE_BASE" > /dev/null 2>&1
+              zip -s ${SPLIT_SIZE_MB}m "${FILE_NAME}.zip" "$FILE_BASE" > /dev/null 2>&1
               
               # Remove original large file
               rm -f "$FILE_BASE"
-              
-              # Rename split files
-              for part in "${FILE_NAME}_split".zip*; do
-                if [ -f "$part" ]; then
-                  NEW_NAME=$(echo "$part" | sed "s/_split//")
-                  mv "$part" "$NEW_NAME"
-                fi
-              done
               
               cd - > /dev/null
               echo "      ✅ Split into multiple ${SPLIT_SIZE_MB}MB parts"
             done
           else
-            echo "   ✅ No files larger than 45MB found"
+            echo "   ✅ No files larger than 44MB found"
           fi
           
-          # Save the processed directory path
-          echo "$EXPORT_DIR" > /tmp/processed_export_dir.txt
           echo ""
           echo "✅ Large files split completed"
 
-      - name: Process Output Based on Type
+      - name: Copy to downloads and create final archive
         run: |
-          if [ ! -f "/tmp/processed_export_dir.txt" ]; then
-            echo "❌ No processed export found!"
+          if [ ! -f "/tmp/channel_export_dir.txt" ]; then
+            echo "❌ No export found!"
             exit 1
           fi
           
-          EXPORT_DIR=$(cat /tmp/processed_export_dir.txt)
+          EXPORT_DIR=$(cat /tmp/channel_export_dir.txt)
           CHANNEL_NAME=$(basename "$EXPORT_DIR")
-          OUTPUT_TYPE="${{ github.event.inputs.output_type }}"
-          
-          if [ ! -d "$EXPORT_DIR" ]; then
-            echo "❌ Export directory not found: $EXPORT_DIR"
-            exit 1
-          fi
-          
-          BACKUP_DIR="/tmp/backup_$$"
-          mkdir -p "$BACKUP_DIR"
-          
-          echo "📦 Processing channel: $CHANNEL_NAME"
-          echo "📦 Output type: $OUTPUT_TYPE"
-          echo ""
-          
-          if [ "$OUTPUT_TYPE" = "zip" ]; then
-            echo "📀 Creating split zip archive (45MB per part)..."
-            
-            # Copy export directory
-            cp -r "$EXPORT_DIR" "$BACKUP_DIR/"
-            
-            cd "$BACKUP_DIR"
-            
-            # Create split zip archive
-            ARCHIVE_NAME="${CHANNEL_NAME}_channel_export"
-            SPLIT_SIZE_MB=45
-            zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_NAME}.zip" "$CHANNEL_NAME" > /dev/null 2>&1
-            
-            # Create folder for zip parts
-            FOLDER_NAME="${CHANNEL_NAME}_channel_export"
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-            
-            # Move all parts to folder
-            mv ${ARCHIVE_NAME}.zip* "$BACKUP_DIR/$FOLDER_NAME/" 2>/dev/null || true
-            
-            cd - > /dev/null
-            
-            # Count parts and calculate total size
-            LINK_NUM=0
-            TOTAL_ARCHIVE_SIZE=0
-            
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
-              TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
-              LINK_NUM=$((LINK_NUM + 1))
-            done
-            
-            TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
-            
-            # Create README for zip output
-            REPO_OWNER="${{ github.repository_owner }}"
-            REPO_NAME="${{ github.event.repository.name }}"
-            BRANCH="${GITHUB_REF_NAME}"
-            
-            urlencode() {
-              python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-            }
-            
-            FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-            
-            # Build download links
-            DOWNLOAD_LINKS=""
-            LINK_COUNT=0
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_BASENAME=$(basename "$part_file")
-              PART_ENCODED=$(urlencode "${PART_BASENAME}")
-              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-              LINK_COUNT=$((LINK_COUNT + 1))
-              DOWNLOAD_LINKS="${DOWNLOAD_LINKS}| ${LINK_COUNT} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
-            done
-            
-            CHANNEL_URL="${{ github.event.inputs.channel_url }}"
-            
-            README_FILE="$BACKUP_DIR/$FOLDER_NAME/README.md"
-            echo "# 📱 Channel Export: ${CHANNEL_NAME} (ZIP Archive)" > "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 📊 Export Information" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "| Property | Value |" >> "$README_FILE"
-            echo "|----------|-------|" >> "$README_FILE"
-            echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |" >> "$README_FILE"
-            echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |" >> "$README_FILE"
-            echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_COUNT} parts) |" >> "$README_FILE"
-            echo "| **Split Size** | 45 MB per part |" >> "$README_FILE"
-            echo "| **Status** | ✅ **Complete** |" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 🔗 Download Links" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "| # | File | Link |" >> "$README_FILE"
-            echo "|---|------|------|" >> "$README_FILE"
-            printf '%s' "$DOWNLOAD_LINKS" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 📖 How to Extract" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)" >> "$README_FILE"
-            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip" >> "$README_FILE"
-            echo "3. **Extract** — all parts combine automatically" >> "$README_FILE"
-            echo "4. Open \`index.html\` in your browser to browse messages" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*" >> "$README_FILE"
-            
-            echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
-            echo "✅ ZIP archive created (${LINK_COUNT} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB total)"
-            
-          else
-            # Normal output - copy the folder structure with already split files
-            echo "📁 Using normal folder structure output (files already split)..."
-            
-            FOLDER_NAME="$CHANNEL_NAME"
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-            cp -r "$EXPORT_DIR"/* "$BACKUP_DIR/$FOLDER_NAME/"
-            
-            # Count files and size
-            TOTAL_FILES=$(find "$EXPORT_DIR" -type f | wc -l)
-            TOTAL_SIZE=$(du -sh "$EXPORT_DIR" | cut -f1)
-            
-            CHANNEL_URL="${{ github.event.inputs.channel_url }}"
-            
-            README_FILE="$BACKUP_DIR/$FOLDER_NAME/README.md"
-            echo "# 📱 Channel Export: ${CHANNEL_NAME}" > "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 📊 Export Information" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "| Property | Value |" >> "$README_FILE"
-            echo "|----------|-------|" >> "$README_FILE"
-            echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |" >> "$README_FILE"
-            echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |" >> "$README_FILE"
-            echo "| **Total Files** | ${TOTAL_FILES} files |" >> "$README_FILE"
-            echo "| **Total Size** | ${TOTAL_SIZE} |" >> "$README_FILE"
-            echo "| **Status** | ✅ **Complete** |" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 📁 Folder Structure" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo '```' >> "$README_FILE"
-            echo "${CHANNEL_NAME}/" >> "$README_FILE"
-            echo "├── channel_info.json      # Channel metadata" >> "$README_FILE"
-            echo "├── export_summary.json    # Export statistics" >> "$README_FILE"
-            echo "├── index.html            # Browse all messages" >> "$README_FILE"
-            echo "└── [message_id]/         # Individual messages" >> "$README_FILE"
-            echo "    ├── message.json      # Message metadata" >> "$README_FILE"
-            echo "    ├── message.txt       # Message text" >> "$README_FILE"
-            echo "    └── media files       # Downloaded media (split if >45MB)" >> "$README_FILE"
-            echo '```' >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "## 📖 How to Browse" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "1. Navigate into the \`${CHANNEL_NAME}\` folder" >> "$README_FILE"
-            echo "2. Open \`index.html\` in your browser" >> "$README_FILE"
-            echo "3. Click on any message ID to view its media files" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "---" >> "$README_FILE"
-            echo "" >> "$README_FILE"
-            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*" >> "$README_FILE"
-            
-            echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
-            echo "✅ Normal folder structure created (${TOTAL_SIZE}, ${TOTAL_FILES} files)"
-          fi
-
-      - name: Copy to downloads and update READMEs
-        run: |
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          OUTPUT_TYPE="${{ github.event.inputs.output_type }}"
           
           # Create downloads directory
           mkdir -p downloads
           
-          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            # Remove old channel folders if exists
-            if [ "$OUTPUT_TYPE" = "zip" ]; then
-              rm -rf downloads/*_channel_export 2>/dev/null || true
-            else
-              CHANNEL_NAME=$(basename "$BACKUP_DIR"/* 2>/dev/null | head -1)
-              rm -rf downloads/${CHANNEL_NAME} 2>/dev/null || true
-            fi
-            
-            # Copy new files
-            cp -r "$BACKUP_DIR"/* downloads/
-            echo "✅ Copied output to downloads folder"
-          else
-            echo "❌ Backup directory is empty!"
-            exit 1
-          fi
+          # Copy export directory
+          cp -r "$EXPORT_DIR" downloads/
           
-          # Get ALL folders from downloads
-          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+          # Create a master README
+          cat > downloads/README.md << EOF
+          # 📥 Channel Export: ${CHANNEL_NAME}
           
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
+          This folder contains the complete export of the Telegram channel.
           
-          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
-          DATE=$(date '+%Y-%m-%d')
+          ## 📊 Statistics
+          - **Channel:** ${CHANNEL_NAME}
+          - **Export Date:** $(date '+%Y-%m-%d %H:%M:%S')
+          - **Total Size:** $(du -sh downloads/$CHANNEL_NAME | cut -f1)
           
-          # Generate downloads/README.md
-          cat > downloads/README.md << 'EOF'
-          # 📥 Downloads from Telegram
+          ## 📁 Structure
+          - Each message is in its own folder (named by message ID)
+          - Each folder contains:
+            - \`message.json\` - Message metadata
+            - \`message.txt\` - Message text
+            - Media files (split into 44MB parts if large)
           
-          This folder contains exported channels and downloaded posts from Telegram.
+          ## 🔧 How to Reassemble Split Files
+          
+          For files that were split into multiple parts (e.g., \`.zip\`, \`.z01\`, \`.z02\`):
+          
+          1. Make sure you have ALL parts
+          2. Open the \`.zip\` file with WinRAR or 7-Zip
+          3. Extract normally - all parts will combine automatically
+          
+          ## 📖 How to Browse
+          
+          Open \`${CHANNEL_NAME}/index.html\` in your browser to browse all messages.
           
           ---
-          
-          ## 📁 Available Downloads
-          
-          | # | Item | Type | Size | Date |
-          |---|------|------|------|------|
+          *Created by AVASAM Telegram Downloader*
           EOF
           
-          COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
-              SIZE="Unknown"
-              TYPE="Channel Export (Normal)"
-              
-              if [[ "$FOLDER" == *_channel_export ]]; then
-                TYPE="Channel Export (ZIP Archive)"
-              fi
-              
-              if [ -f "downloads/$FOLDER/README.md" ]; then
-                if [[ "$TYPE" == *"ZIP"* ]]; then
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                else
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                  SIZE="${BASH_REMATCH[1]} MB"
-                elif [[ "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
-                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B' | head -1)
-                fi
-              fi
-              
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
-              COUNTER=$((COUNTER + 1))
-            fi
-          done
+          echo "✅ Export copied to downloads folder"
           
-          cat >> downloads/README.md << 'EOF'
+          # Create a final downloadable zip of the entire export
+          echo "📦 Creating final downloadable archive..."
+          cd downloads
+          zip -r "${CHANNEL_NAME}_complete_export.zip" "$CHANNEL_NAME" > /dev/null 2>&1
+          cd ..
           
-          ---
-          
-          ## 📖 How to use
-          
-          ### For ZIP Archive Exports:
-          1. Download all parts of the zip file
-          2. Extract the first part (.zip) to get the complete folder
-          3. Open `index.html` in your browser to browse messages
-          
-          ### For Normal Folder Exports:
-          1. Navigate into the channel folder
-          2. Open `index.html` in your browser to browse messages
-          3. Each message has its own folder with text and media files
-          4. Files larger than 45MB are automatically split into parts
-          
-          ---
-          
-          *🛠️ Created by [avasam.ir](https://avasam.ir)*
-          EOF
-          
-          echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
-          
-          # Update root README.md
-          ROOT_README="README.md"
-          SECTION_TITLE="📥 دانلود‌های تلگرام"
-          
-          if [ ! -f "$ROOT_README" ]; then
-            echo "# AVASAM Telegram Downloader" > "$ROOT_README"
-            echo "" >> "$ROOT_README"
-            echo "دانلود خودکار کانال‌ها و پست‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
-            echo "" >> "$ROOT_README"
-            echo "---" >> "$ROOT_README"
-            echo "" >> "$ROOT_README"
-          fi
-          
-          # Remove old section if exists
-          if grep -q "$SECTION_TITLE" "$ROOT_README"; then
-            sed -i "/$SECTION_TITLE/,/^---$/d" "$ROOT_README"
-            sed -i '${/^$/d;}' "$ROOT_README"
-          fi
-          
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "## $SECTION_TITLE"
-            echo ""
-            echo "| # | Item | Type | Size | Date |"
-            echo "|---|------|------|------|------|"
-          } >> "$ROOT_README"
-          
-          COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
-              SIZE="Unknown"
-              TYPE="Channel Export (Normal)"
-              
-              if [[ "$FOLDER" == *_channel_export ]]; then
-                TYPE="Channel Export (ZIP Archive)"
-              fi
-              
-              if [ -f "downloads/$FOLDER/README.md" ]; then
-                if [[ "$TYPE" == *"ZIP"* ]]; then
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                else
-                  SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
-                fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
-                  SIZE="${BASH_REMATCH[1]} MB"
-                elif [[ "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
-                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B' | head -1)
-                fi
-              fi
-              
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
-              COUNTER=$((COUNTER + 1))
-            fi
-          done
-          
-          {
-            echo ""
-            echo "---"
-          } >> "$ROOT_README"
-          
-          echo "✅ Root README.md updated"
+          FINAL_SIZE=$(du -sh "downloads/${CHANNEL_NAME}_complete_export.zip" | cut -f1)
+          echo "✅ Final archive created: ${CHANNEL_NAME}_complete_export.zip (${FINAL_SIZE})"
 
-      - name: Incremental Commit & Push
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "export_${{ github.run_number }}"
+          name: "Channel Export - ${{ github.event.inputs.channel_url }}"
+          body: |
+            ## 📥 دانلود کامل کانال تلگرام
+            
+            ### اطلاعات دانلود:
+            - **تاریخ:** $(date '+%Y-%m-%d %H:%M:%S')
+            - **حجم فایل:** $(du -sh downloads/*_complete_export.zip | cut -f1)
+            
+            ### نحوه استفاده:
+            1. فایل ZIP را دانلود کنید
+            2. با WinRAR یا 7-Zip extract کنید
+            3. فایل `index.html` را در مرورگر باز کنید
+            
+            ### نکات مهم:
+            - فایل‌های بزرگ به قسمت‌های 44 مگابایتی تقسیم شده‌اند
+            - برای extract کردن، همه قسمت‌ها باید در کنار هم باشند
+            - با باز کردن فایل `.zip` اصلی، بقیه قسمت‌ها خودکار ترکیب می‌شوند
+            
+            ---
+            *Created by AVASAM Telegram Downloader*
+          files: |
+            downloads/*_complete_export.zip
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit and push changes
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
-          # Ensure downloads directory exists
-          mkdir -p downloads
+          # Add all files
+          git add -f downloads/
+          git add README.md
           
-          # First, commit and push README files (small)
-          echo "📝 Committing README files..."
-          git add -f downloads/README.md downloads/*/README.md README.md 2>/dev/null || true
           if ! git diff --cached --quiet; then
-            git commit -m "Update README files [skip ci]" || true
+            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+            git commit -m "Channel export - $TIMESTAMP [skip ci]"
+            
             for i in 1 2 3; do
-              if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ README files pushed!"
-                break
-              fi
-              sleep 5
-            done
-          fi
-          
-          # Commit channel info files
-          echo "📝 Committing channel metadata..."
-          git add -f downloads/*/channel_info.json downloads/*/export_summary.json downloads/*/index.html 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Add channel metadata [skip ci]" || true
-            for i in 1 2 3; do
-              if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Metadata files pushed!"
-                break
-              fi
-              sleep 5
-            done
-          fi
-          
-          # Commit message.json and message.txt files in batches
-          echo "📝 Committing message files in batches..."
-          MESSAGE_FILES=$(find downloads -name "message.json" -o -name "message.txt" 2>/dev/null | sort)
-          
-          if [ -n "$MESSAGE_FILES" ]; then
-            BATCH_SIZE=20
-            BATCH=()
-            COUNT=0
-            BATCH_NUM=1
-            
-            for FILE in $MESSAGE_FILES; do
-              BATCH+=("$FILE")
-              COUNT=$((COUNT + 1))
-              
-              if [ $COUNT -ge $BATCH_SIZE ]; then
-                echo "   Pushing batch $BATCH_NUM ($COUNT files)..."
-                git add -f "${BATCH[@]}" 2>/dev/null || true
-                if ! git diff --cached --quiet; then
-                  git commit -m "Add message files batch $BATCH_NUM [skip ci]" || true
-                  for i in 1 2 3; do
-                    if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
-                      echo "   ✅ Batch $BATCH_NUM pushed!"
-                      break
-                    fi
-                    sleep 10
-                  done
-                fi
-                BATCH=()
-                COUNT=0
-                BATCH_NUM=$((BATCH_NUM + 1))
-              fi
-            done
-            
-            # Push remaining files
-            if [ ${#BATCH[@]} -gt 0 ]; then
-              echo "   Pushing final batch ($COUNT files)..."
-              git add -f "${BATCH[@]}" 2>/dev/null || true
-              if ! git diff --cached --quiet; then
-                git commit -m "Add remaining message files [skip ci]" || true
-                for i in 1 2 3; do
-                  if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
-                    echo "   ✅ Final batch pushed!"
-                    break
-                  fi
-                  sleep 10
-                done
-              fi
-            fi
-          fi
-          
-          # Commit media files (split zip files) in small batches
-          echo "📝 Committing media files in small batches..."
-          MEDIA_FILES=$(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" -o -name "*.mp4" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | sort)
-          
-          if [ -n "$MEDIA_FILES" ]; then
-            BATCH_SIZE=5
-            BATCH=()
-            COUNT=0
-            BATCH_NUM=1
-            
-            for FILE in $MEDIA_FILES; do
-              # Check file size
-              FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
-              if [ $FILE_SIZE -gt 10000000 ]; then
-                # Large file - push individually
-                echo "   Pushing large file individually: $(basename "$FILE") ($(($FILE_SIZE/1024/1024))MB)..."
-                git add -f "$FILE" 2>/dev/null || true
-                if ! git diff --cached --quiet; then
-                  git commit -m "Add media file $BATCH_NUM [skip ci]" || true
-                  for i in 1 2 3; do
-                    if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
-                      echo "   ✅ Large file pushed!"
-                      break
-                    fi
-                    sleep 15
-                  done
-                fi
-                BATCH_NUM=$((BATCH_NUM + 1))
-              else
-                BATCH+=("$FILE")
-                COUNT=$((COUNT + 1))
-                
-                if [ $COUNT -ge $BATCH_SIZE ]; then
-                  echo "   Pushing media batch $BATCH_NUM ($COUNT files)..."
-                  git add -f "${BATCH[@]}" 2>/dev/null || true
-                  if ! git diff --cached --quiet; then
-                    git commit -m "Add media files batch $BATCH_NUM [skip ci]" || true
-                    for i in 1 2 3; do
-                      if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
-                        echo "   ✅ Media batch $BATCH_NUM pushed!"
-                        break
-                      fi
-                      sleep 15
-                    done
-                  fi
-                  BATCH=()
-                  COUNT=0
-                  BATCH_NUM=$((BATCH_NUM + 1))
-                fi
-              fi
-            done
-            
-            # Push remaining media files
-            if [ ${#BATCH[@]} -gt 0 ]; then
-              echo "   Pushing final media batch ($COUNT files)..."
-              git add -f "${BATCH[@]}" 2>/dev/null || true
-              if ! git diff --cached --quiet; then
-                git commit -m "Add remaining media files [skip ci]" || true
-                for i in 1 2 3; do
-                  if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
-                    echo "   ✅ Final media batch pushed!"
-                    break
-                  fi
-                  sleep 15
-                done
-              fi
-            fi
-          fi
-          
-          # Final push for any remaining files
-          echo "📝 Finalizing..."
-          git add -f downloads/ 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Final updates [skip ci]" || true
-            for i in 1 2 3; do
-              if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Final push successful!"
+              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Push successful!"
                 break
               fi
               sleep 10
             done
+          else
+            echo "No changes to commit"
           fi
           
           echo ""
           echo "=========================================="
-          echo "✅ Channel export completed successfully!"
+          echo "✅ Channel export completed!"
+          echo "📥 Download from Releases: https://github.com/${{ github.repository }}/releases"
           echo "=========================================="
