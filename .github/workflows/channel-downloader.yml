@@ -1,0 +1,805 @@
+name: ⬇️ Download Entire Channel History
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_url:
+        description: '🔗 لینک کانال تلگرام (مثال: https://t.me/username)'
+        required: true
+        type: string
+      limit:
+        description: 'تعداد پیام‌های آخر برای دانلود (پیش‌فرض: همه)'
+        required: false
+        default: '0'
+        type: string
+      include_media:
+        description: 'دانلود فایل‌های مدیا (true/false)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  download-channel-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: write
+    steps:
+      - name: 🧹 Extreme disk space cleanup
+        run: |
+          echo "Freeing up massive disk space..."
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/az
+          sudo rm -rf /opt/microsoft
+          sudo rm -rf /opt/pipx
+          sudo rm -rf /usr/lib/jvm
+          sudo rm -rf /usr/local/go
+          sudo rm -rf /usr/share/gradle
+          sudo rm -rf /usr/share/maven
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/local/share/gecko_driver
+          sudo docker system prune -a -f --volumes 2>/dev/null || true
+          sudo apt-get clean
+          sudo apt-get autoremove -y
+          sudo rm -rf /tmp/*
+          sudo rm -rf /var/tmp/*
+          rm -rf ~/.cache
+          rm -rf ~/.npm
+          rm -rf ~/.cargo
+          rm -rf ~/.rustup
+          
+          echo ""
+          echo "📊 Available disk space after cleanup:"
+          df -h /
+          
+          AVAILABLE_GB=$(df --output=avail / | tail -n 1 | awk '{print int($1/1024/1024)}')
+          if [ $AVAILABLE_GB -lt 10 ]; then
+            echo "❌ Only ${AVAILABLE_GB}GB available! Need at least 10GB."
+            exit 1
+          fi
+          echo "✅ ${AVAILABLE_GB}GB available - good to continue!"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: |
+          npm install telegram
+          sudo apt-get update
+          sudo apt-get install -y zip curl bc file jq
+
+      - name: Configure Git for Large Files
+        run: |
+          git config --global http.postBuffer 524288000
+          git config --global http.maxRequestBuffer 100M
+          git config --global core.compression 0
+          git config --global pack.windowMemory 256m
+          git config --global pack.packSizeLimit 100m
+          git config --global pack.threads 1
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      - name: Download Channel History
+        id: download
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
+          CHANNEL_URL: ${{ github.event.inputs.channel_url }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          INCLUDE_MEDIA: ${{ github.event.inputs.include_media }}
+        run: |
+          cat > download_channel.js << 'EOF'
+          const { TelegramClient } = require("telegram");
+          const { StringSession } = require("telegram/sessions");
+          const fs = require("fs");
+          const path = require("path");
+          const { execSync } = require("child_process");
+
+          const apiId = parseInt(process.env.API_ID);
+          const apiHash = process.env.API_HASH;
+          const stringSession = process.env.STRING_SESSION;
+          const channelUrl = process.env.CHANNEL_URL;
+          const limit = parseInt(process.env.LIMIT) || 0;
+          const includeMedia = process.env.INCLUDE_MEDIA === 'true';
+
+          let lastLoggedPercent = 0;
+          let totalMessages = 0;
+          let downloadedMessages = 0;
+          let totalMediaSize = 0;
+
+          function sanitizeFilename(filename) {
+            return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
+          }
+
+          async function extractChatId(url) {
+            const patterns = [
+              /https?:\/\/t\.me\/(?:c\/)?([^\/]+)/,
+              /https?:\/\/telegram\.me\/(?:c\/)?([^\/]+)/,
+            ];
+            
+            let match = null;
+            for (const pattern of patterns) {
+              match = url.match(pattern);
+              if (match) break;
+            }
+            
+            if (!match) {
+              throw new Error(`Invalid Telegram channel URL format: ${url}`);
+            }
+            
+            let chatId = match[1];
+            
+            if (chatId === 'c' || chatId.startsWith('c/')) {
+              chatId = '-100' + chatId.replace('c/', '').replace('c', '');
+            } else if (!isNaN(parseInt(chatId)) && chatId.length > 5) {
+              chatId = '-100' + chatId;
+            }
+            
+            return chatId;
+          }
+
+          async function downloadMediaFile(client, media, outputPath) {
+            return new Promise(async (resolve, reject) => {
+              try {
+                let lastPercent = 0;
+                const filePath = await client.downloadMedia(media, {
+                  outputFile: outputPath,
+                  progressCallback: (downloaded, total) => {
+                    const percent = (downloaded / total * 100);
+                    if (Math.floor(percent / 10) > Math.floor(lastPercent / 10) || percent === 100) {
+                      lastPercent = percent;
+                      const downloadedMB = downloaded / 1024 / 1024;
+                      const totalMB = total / 1024 / 1024;
+                      process.stdout.write(`\r         📊 ${percent.toFixed(1)}% (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
+                    }
+                  }
+                });
+                
+                if (filePath && fs.existsSync(filePath)) {
+                  const stats = fs.statSync(filePath);
+                  if (stats.size > 0) {
+                    totalMediaSize += stats.size;
+                    resolve(filePath);
+                  } else {
+                    reject(new Error("File is empty"));
+                  }
+                } else {
+                  reject(new Error("Download failed"));
+                }
+              } catch (err) {
+                reject(err);
+              }
+            });
+          }
+
+          async function getFileNameFromMedia(media, messageId, index) {
+            if (media.document && media.document.attributes) {
+              for (const attr of media.document.attributes) {
+                if (attr.className === 'DocumentAttributeFilename') {
+                  return sanitizeFilename(attr.fileName);
+                }
+              }
+            }
+            
+            const mediaType = media.className;
+            if (mediaType === 'MessageMediaPhoto') {
+              return `photo_${messageId}.jpg`;
+            } else if (mediaType === 'MessageMediaDocument') {
+              return `document_${messageId}_${index}`;
+            }
+            
+            return `media_${messageId}_${index}`;
+          }
+
+          async function processMessage(client, message, channelName, outputDir, messageIndex, total) {
+            const messageId = message.id;
+            const messageDir = path.join(outputDir, String(messageId));
+            fs.mkdirSync(messageDir, { recursive: true });
+            
+            // Save message info
+            const messageInfo = {
+              id: message.id,
+              date: message.date,
+              text: message.text || '',
+              hasMedia: !!message.media,
+              views: message.views || 0,
+              forwards: message.forwards || 0,
+              replies: message.replies ? message.replies.replies : 0
+            };
+            
+            fs.writeFileSync(path.join(messageDir, 'message.json'), JSON.stringify(messageInfo, null, 2));
+            
+            // Save message text
+            if (message.text && message.text.length > 0) {
+              fs.writeFileSync(path.join(messageDir, 'message.txt'), message.text);
+            }
+            
+            // Download media if exists and requested
+            if (includeMedia && message.media) {
+              let fileName = await getFileNameFromMedia(message.media, messageId, 0);
+              let outputPath = path.join(messageDir, fileName);
+              
+              if (!path.extname(outputPath) || path.extname(outputPath) === '') {
+                const tempPath = path.join(messageDir, `temp`);
+                try {
+                  await downloadMediaFile(client, message.media, tempPath);
+                  
+                  if (fs.existsSync(tempPath)) {
+                    const fileType = execSync(`file --mime-type -b "${tempPath}"`).toString().trim();
+                    const extMap = {
+                      'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+                      'video/quicktime': '.mov', 'video/x-msvideo': '.avi',
+                      'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
+                      'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+                      'application/pdf': '.pdf', 'application/zip': '.zip',
+                      'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
+                    };
+                    const ext = extMap[fileType] || '';
+                    const finalPath = outputPath + ext;
+                    fs.renameSync(tempPath, finalPath);
+                  }
+                } catch (err) {
+                  console.log(`\n      ⚠️ Failed to download media for message ${messageId}: ${err.message}`);
+                }
+              } else {
+                try {
+                  await downloadMediaFile(client, message.media, outputPath);
+                } catch (err) {
+                  console.log(`\n      ⚠️ Failed to download media for message ${messageId}: ${err.message}`);
+                }
+              }
+            }
+            
+            downloadedMessages++;
+            
+            // Progress update
+            const percent = (downloadedMessages / total * 100);
+            if (Math.floor(percent / 5) > Math.floor((downloadedMessages - 1) / total * 100 / 5)) {
+              console.log(`   📊 ${percent.toFixed(1)}% (${downloadedMessages}/${total} messages) | Media: ${(totalMediaSize/1024/1024).toFixed(2)}MB`);
+            }
+          }
+
+          async function main() {
+            let client = null;
+            
+            try {
+              console.log('🚀 Connecting to Telegram...');
+              console.log(`📌 Channel: ${channelUrl}`);
+              console.log(`📌 Limit: ${limit === 0 ? 'All messages' : limit + ' messages'}`);
+              console.log(`📌 Include Media: ${includeMedia}\n`);
+              
+              const session = new StringSession(stringSession);
+              client = new TelegramClient(session, apiId, apiHash, {
+                connectionRetries: 5,
+                useWSS: true,
+              });
+              
+              await client.start({
+                phoneNumber: () => Promise.reject(new Error('Use STRING_SESSION')),
+                phoneCode: () => Promise.reject(new Error('Use STRING_SESSION')),
+                password: () => Promise.reject(new Error('Use STRING_SESSION')),
+                onError: (err) => console.error('Connection error:', err),
+              });
+              
+              console.log('✅ Connected successfully!\n');
+              
+              const chatId = await extractChatId(channelUrl);
+              console.log(`📨 Fetching channel: ${chatId}`);
+              
+              let chat;
+              if (chatId.toString().startsWith('-100')) {
+                chat = await client.getEntity(parseInt(chatId));
+              } else {
+                chat = await client.getEntity(chatId);
+              }
+              
+              let channelName = "unknown_channel";
+              if (chat.username) {
+                channelName = chat.username;
+              } else if (chat.title) {
+                channelName = sanitizeFilename(chat.title);
+              } else {
+                channelName = chatId.toString().replace('-100', '');
+              }
+              
+              console.log(`📁 Channel Name: ${channelName}`);
+              console.log(`📁 Fetching messages...\n`);
+              
+              // Create output directory
+              const outputDir = `/tmp/channel_export/${channelName}`;
+              fs.mkdirSync(outputDir, { recursive: true });
+              
+              // Get messages
+              const messages = [];
+              let offsetId = 0;
+              let hasMore = true;
+              
+              while (hasMore) {
+                const batch = await client.getMessages(chat, {
+                  limit: 100,
+                  offsetId: offsetId,
+                });
+                
+                if (batch.length === 0) break;
+                
+                for (const msg of batch) {
+                  messages.push(msg);
+                }
+                
+                offsetId = batch[batch.length - 1].id;
+                console.log(`   📥 Fetched ${messages.length} messages so far...`);
+                
+                if (limit > 0 && messages.length >= limit) {
+                  hasMore = false;
+                  break;
+                }
+              }
+              
+              // Apply limit
+              let finalMessages = messages;
+              if (limit > 0 && messages.length > limit) {
+                finalMessages = messages.slice(0, limit);
+              }
+              
+              totalMessages = finalMessages.length;
+              console.log(`\n✅ Total messages to download: ${totalMessages}\n`);
+              
+              // Save channel info
+              const channelInfo = {
+                name: channelName,
+                url: channelUrl,
+                chatId: chatId,
+                totalMessages: totalMessages,
+                exportDate: new Date().toISOString(),
+                includeMedia: includeMedia
+              };
+              fs.writeFileSync(path.join(outputDir, 'channel_info.json'), JSON.stringify(channelInfo, null, 2));
+              
+              // Process each message
+              console.log(`📥 Processing messages...\n`);
+              
+              for (let i = 0; i < finalMessages.length; i++) {
+                const msg = finalMessages[i];
+                process.stdout.write(`\r   📍 Processing message ${i + 1}/${totalMessages} (ID: ${msg.id})`);
+                await processMessage(client, msg, channelName, outputDir, i, totalMessages);
+              }
+              
+              console.log(`\n`);
+              
+              // Create summary
+              const summary = {
+                channel: channelName,
+                totalMessages: totalMessages,
+                totalSizeMB: (totalMediaSize / 1024 / 1024).toFixed(2),
+                exportDate: new Date().toISOString(),
+                includeMedia: includeMedia
+              };
+              fs.writeFileSync(path.join(outputDir, 'export_summary.json'), JSON.stringify(summary, null, 2));
+              
+              // Create HTML index
+              let htmlContent = `<!DOCTYPE html>
+              <html>
+              <head>
+                <meta charset="UTF-8">
+                <title>${channelName} - Channel Export</title>
+                <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+                  .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; }
+                  .message { border-bottom: 1px solid #eee; padding: 15px; margin-bottom: 10px; }
+                  .message-id { color: #666; font-size: 12px; }
+                  .message-date { color: #999; font-size: 12px; }
+                  .message-text { margin-top: 10px; }
+                  .media { margin-top: 10px; }
+                  img, video { max-width: 100%; max-height: 300px; }
+                  h1 { color: #333; }
+                  .summary { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <h1>📱 ${channelName}</h1>
+                  <div class="summary">
+                    <strong>Export Summary:</strong><br>
+                    Total Messages: ${totalMessages}<br>
+                    Total Size: ${summary.totalSizeMB} MB<br>
+                    Export Date: ${new Date().toLocaleString()}<br>
+                    Media Included: ${includeMedia}
+                  </div>
+              `;
+              
+              for (const msg of finalMessages) {
+                const messageDate = new Date(msg.date * 1000).toLocaleString();
+                htmlContent += `
+                  <div class="message">
+                    <div class="message-id">Message ID: ${msg.id}</div>
+                    <div class="message-date">${messageDate}</div>
+                    ${msg.text ? `<div class="message-text">${msg.text.replace(/\n/g, '<br>')}</div>` : ''}
+                    ${includeMedia && msg.media ? `<div class="media"><a href="${msg.id}/">View Media Files</a></div>` : ''}
+                  </div>
+                `;
+              }
+              
+              htmlContent += `
+                </div>
+              </body>
+              </html>`;
+              
+              fs.writeFileSync(path.join(outputDir, 'index.html'), htmlContent);
+              
+              // Save list of all message directories
+              const messageDirs = finalMessages.map(m => path.join(outputDir, String(m.id)));
+              fs.writeFileSync('/tmp/message_dirs.txt', messageDirs.join('\n'));
+              fs.writeFileSync('/tmp/channel_export_dir.txt', outputDir);
+              
+              const totalSizeMB = totalMediaSize / 1024 / 1024;
+              
+              console.log(`\n${'='.repeat(60)}`);
+              console.log(`📊 EXPORT SUMMARY`);
+              console.log(`${'='.repeat(60)}`);
+              console.log(`✅ Channel: ${channelName}`);
+              console.log(`✅ Total messages: ${totalMessages}`);
+              console.log(`✅ Total media size: ${totalSizeMB.toFixed(2)}MB`);
+              console.log(`✅ Export directory: ${outputDir}`);
+              console.log(`${'='.repeat(60)}`);
+              
+            } catch (error) {
+              console.error('❌ Fatal error:', error);
+              process.exit(1);
+            } finally {
+              if (client) {
+                try {
+                  console.log('\n👋 Disconnecting from Telegram...');
+                  await client.disconnect();
+                  console.log('✅ Disconnected successfully');
+                } catch (err) {
+                  console.log('⚠️ Disconnect warning:', err.message);
+                }
+              }
+            }
+          }
+          
+          process.on('unhandledRejection', (err) => {
+            if (err.message && err.message.includes('TIMEOUT')) {
+              console.log('⚠️ Ignoring timeout error (download completed successfully)');
+              process.exit(0);
+            } else {
+              console.error('Unhandled rejection:', err);
+              process.exit(1);
+            }
+          });
+          
+          main().catch(err => {
+            console.error('Main error:', err);
+            process.exit(1);
+          });
+          EOF
+
+          node download_channel.js
+          
+          DOWNLOAD_EXIT=$?
+          if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/channel_export_dir.txt" ] && [ -s "/tmp/channel_export_dir.txt" ]); then
+            echo "Channel export completed successfully"
+            exit 0
+          else
+            exit $DOWNLOAD_EXIT
+          fi
+
+      - name: Create ZIP Archive of Channel Export
+        run: |
+          if [ ! -f "/tmp/channel_export_dir.txt" ]; then
+            echo "❌ No export found!"
+            exit 1
+          fi
+          
+          EXPORT_DIR=$(cat /tmp/channel_export_dir.txt)
+          CHANNEL_NAME=$(basename "$EXPORT_DIR")
+          
+          if [ ! -d "$EXPORT_DIR" ]; then
+            echo "❌ Export directory not found: $EXPORT_DIR"
+            exit 1
+          fi
+          
+          BACKUP_DIR="/tmp/backup_$$"
+          mkdir -p "$BACKUP_DIR"
+          
+          echo "📦 Creating archive for channel: $CHANNEL_NAME"
+          
+          # Copy entire export directory
+          cp -r "$EXPORT_DIR" "$BACKUP_DIR/"
+          
+          cd "$BACKUP_DIR"
+          
+          # Create zip archive
+          ARCHIVE_NAME="${CHANNEL_NAME}_channel_export"
+          echo "   📀 Creating zip archive (this may take a while)..."
+          zip -r -9 "${ARCHIVE_NAME}.zip" "$CHANNEL_NAME" > /dev/null 2>&1
+          
+          # Get archive size
+          ARCHIVE_SIZE=$(stat -c%s "${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
+          ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
+          
+          # Create README
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
+          
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+          
+          FOLDER_NAME="${CHANNEL_NAME}_channel_export"
+          mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+          mv "${ARCHIVE_NAME}.zip" "$BACKUP_DIR/$FOLDER_NAME/"
+          
+          FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
+          FILE_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
+          RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
+          CHANNEL_URL="${{ github.event.inputs.channel_url }}"
+          
+          cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOF
+          # 📱 Channel Export: ${CHANNEL_NAME}
+          
+          ---
+          
+          ## 📊 Export Information
+          
+          | Property | Value |
+          |----------|-------|
+          | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
+          | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
+          | **Archive Size** | ${ARCHIVE_SIZE_MB} MB |
+          | **Status** | ✅ **Complete** |
+          
+          ---
+          
+          ## 🔗 Download Link
+          
+          | File | Link |
+          |------|------|
+          | \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |
+          
+          ---
+          
+          ## 📖 How to Extract
+          
+          1. **Download** \`${ARCHIVE_NAME}.zip\`
+          2. **Extract** with WinRAR, 7-Zip, or any zip tool
+          3. Open \`index.html\` in your browser to browse messages
+          4. Each message is in its own folder with ID as name
+          
+          ---
+          
+          ## 📁 Folder Structure
+          
+          \`\`\`
+          ${CHANNEL_NAME}/
+          ├── channel_info.json      # Channel metadata
+          ├── export_summary.json    # Export statistics
+          ├── index.html            # Browse all messages
+          └── [message_id]/         # Individual messages
+              ├── message.json      # Message metadata
+              ├── message.txt       # Message text
+              └── media files       # Downloaded media
+          \`\`\`
+          
+          ---
+          
+          *🛠️ Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          
+          cd - > /dev/null
+          
+          echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
+          
+          echo ""
+          echo "✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
+
+      - name: Copy to downloads and update READMEs
+        run: |
+          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
+          
+          mkdir -p downloads
+          
+          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+            cp -r "$BACKUP_DIR"/* downloads/
+            echo "✅ Copied archive to downloads folder"
+          else
+            echo "❌ Backup directory is empty!"
+            exit 1
+          fi
+          
+          # Get ALL folders from downloads
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+          
+          if [ -z "$FOLDERS" ]; then
+            echo "❌ No folders found in downloads!"
+            exit 1
+          fi
+          
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+          
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+          DATE=$(date '+%Y-%m-%d')
+          
+          # Generate downloads/README.md
+          cat > downloads/README.md << 'EOF'
+          # 📥 Downloads from Telegram
+          
+          This folder contains exported channels and downloaded posts from Telegram.
+          
+          ---
+          
+          ## 📁 Available Downloads
+          
+          | # | Item | Type | Size | Date |
+          |---|------|------|------|------|
+          EOF
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              TYPE="Channel Export"
+              
+              if [[ "$FOLDER" == *_channel_export ]]; then
+                TYPE="Channel Export"
+              else
+                TYPE="Single Post"
+              fi
+              
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> downloads/README.md
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          cat >> downloads/README.md << 'EOF'
+          
+          ---
+          
+          ## 📖 How to use
+          
+          ### For Channel Exports:
+          1. Download the zip file
+          2. Extract to a folder
+          3. Open `index.html` in your browser
+          4. Browse all messages with their media
+          
+          ### For Single Posts:
+          1. Click on the post folder
+          2. Download the zip file
+          3. Extract to get all files
+          
+          ---
+          
+          *🛠️ Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          
+          echo "✅ downloads/README.md updated with $((COUNTER - 1)) item(s)"
+          
+          # Update root README.md
+          ROOT_README="README.md"
+          SECTION_TITLE="📥 دانلود‌های تلگرام"
+          
+          if [ ! -f "$ROOT_README" ]; then
+            echo "# AVASAM Telegram Downloader" > "$ROOT_README"
+            echo "" >> "$ROOT_README"
+            echo "دانلود خودکار کانال‌ها و پست‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
+            echo "" >> "$ROOT_README"
+          fi
+          
+          if grep -q "$SECTION_TITLE" "$ROOT_README"; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" "$ROOT_README"
+            sed -i '${/^$/d;}' "$ROOT_README"
+          fi
+          
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            echo "| # | Item | Type | Size | Date |"
+            echo "|---|------|------|------|------|"
+          } >> "$ROOT_README"
+          
+          COUNTER=1
+          for FOLDER in $FOLDERS; do
+            if [ -n "$FOLDER" ]; then
+              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              SIZE="Unknown"
+              TYPE="Channel Export"
+              
+              if [[ "$FOLDER" == *_channel_export ]]; then
+                TYPE="Channel Export"
+              else
+                TYPE="Single Post"
+              fi
+              
+              if [ -f "downloads/$FOLDER/README.md" ]; then
+                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                fi
+              fi
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${TYPE} | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+              COUNTER=$((COUNTER + 1))
+            fi
+          done
+          
+          {
+            echo ""
+            echo "---"
+          } >> "$ROOT_README"
+          
+          echo "✅ Root README.md updated"
+
+      - name: Commit & Push
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          
+          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "❌ No files to commit!"
+            exit 1
+          fi
+          
+          git add -f downloads/
+          git add README.md
+          
+          if ! git diff --cached --quiet; then
+            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+            git commit -m "Export channel - $TIMESTAMP [skip ci]"
+            
+            for i in {1..5}; do
+              echo "Push attempt $i/5..."
+              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Push successful!"
+                break
+              else
+                echo "Push failed, retry $i/5..."
+                if [ $i -lt 5 ]; then
+                  sleep 10
+                  git pull --rebase origin "$BRANCH" 2>/dev/null || true
+                  git add -f downloads/
+                  git add README.md
+                  if ! git diff --cached --quiet; then
+                    git commit -m "Export channel - $TIMESTAMP [skip ci]"
+                  fi
+                fi
+              fi
+            done
+          else
+            echo "No changes to commit"
+          fi
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Channel export completed successfully!"
+          echo "=========================================="
