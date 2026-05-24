@@ -83,6 +83,7 @@ jobs:
           git config user.email "github-actions@github.com"
 
       - name: Download from Telegram
+        id: download
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
@@ -173,6 +174,10 @@ jobs:
                     }
                   }
                   
+                  if (!finalFileName && message.media.className === 'MessageMediaPhoto') {
+                    finalFileName = `telegram_photo_${Date.now()}.jpg`;
+                  }
+                  
                   if (!finalFileName) {
                     const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
                     const extMap = {
@@ -206,6 +211,7 @@ jobs:
 
           async function main() {
             let client = null;
+            let downloadsDir = null;
             
             try {
               console.log('🚀 Connecting to Telegram...');
@@ -245,7 +251,7 @@ jobs:
               console.log('✅ Message found!');
               
               const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-              const downloadsDir = path.join('/tmp', `telegram_${timestamp}`);
+              downloadsDir = path.join('/tmp', `telegram_${timestamp}`);
               fs.mkdirSync(downloadsDir, { recursive: true });
               
               if (message.text && message.text.length > 0) {
@@ -268,7 +274,7 @@ jobs:
                   hasMedia: !!message.media,
                   mediaType: message.media ? message.media.className : 'none',
                 }, null, 2));
-                console.log(`💾 Saved post info to ${infoFile}`);
+                downloadedFiles.push(infoFile);
               }
               
               const filesList = '/tmp/downloaded_files.txt';
@@ -285,23 +291,21 @@ jobs:
                 allFiles.push(textFile);
               }
               
-              const infoFile = path.join(downloadsDir, 'post_info.json');
-              if (fs.existsSync(infoFile) && fs.statSync(infoFile).size > 0) {
-                allFiles.push(infoFile);
-              }
-              
               fs.writeFileSync(filesList, allFiles.join('\n'));
               
               console.log(`\n📊 Summary:`);
               console.log(`   - Total files: ${allFiles.length}`);
               console.log(`   - Total size: ${(allFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0) / 1024 / 1024).toFixed(2)}MB`);
+              console.log(`   - Download directory: ${downloadsDir}`);
               
+              // Write output for next steps
               const outputFile = process.env.GITHUB_OUTPUT;
               if (outputFile) {
                 fs.appendFileSync(outputFile, `BASE_DIR=${downloadsDir}\n`);
-              } else {
-                fs.writeFileSync('/tmp/base_dir.txt', downloadsDir);
               }
+              
+              // Also write to a file as fallback
+              fs.writeFileSync('/tmp/base_dir.txt', downloadsDir);
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -319,6 +323,7 @@ jobs:
             }
           }
           
+          // Ignore timeout errors after successful download
           process.on('unhandledRejection', (err) => {
             if (err.message && err.message.includes('TIMEOUT')) {
               console.log('⚠️ Ignoring timeout error (download completed successfully)');
@@ -329,22 +334,23 @@ jobs:
             }
           });
           
-          main();
+          main().catch(err => {
+            console.error('Main error:', err);
+            process.exit(1);
+          });
           EOF
 
-          node download_telegram.js || {
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -eq 0 ]; then
-              echo "Download completed successfully"
-            else
-              echo "Download may have completed despite errors, checking files..."
-              if [ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]; then
-                echo "Files were downloaded successfully, continuing..."
-              else
-                exit $EXIT_CODE
-              fi
-            fi
-          }
+          # Run the download script
+          node download_telegram.js
+          
+          # Ensure exit code is 0 even if timeout error occurred but download succeeded
+          DOWNLOAD_EXIT=$?
+          if [ $DOWNLOAD_EXIT -eq 0 ] || [ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]; then
+            echo "Download completed successfully (exit code: $DOWNLOAD_EXIT)"
+            exit 0
+          else
+            exit $DOWNLOAD_EXIT
+          fi
 
       - name: Get base directory
         id: get_dir
@@ -356,13 +362,21 @@ jobs:
           fi
           echo "BASE_DIR=${BASE_DIR}" >> $GITHUB_OUTPUT
           echo "Base directory: ${BASE_DIR}"
+          
+          # Debug: show what files exist
+          echo ""
+          echo "📁 Files in download directory:"
+          find "${BASE_DIR}" -type f 2>/dev/null || echo "No files found"
+          echo ""
+          echo "📄 Downloaded files list:"
+          cat /tmp/downloaded_files.txt 2>/dev/null || echo "No files list found"
 
       - name: Create ZIP archives (auto-split at 45MB)
         run: |
           BASE_DIR="${{ steps.get_dir.outputs.BASE_DIR }}"
           
           if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
-            echo "No downloads found!"
+            echo "❌ No downloads found at: $BASE_DIR"
             exit 1
           fi
 
@@ -390,21 +404,45 @@ jobs:
 
           echo "📦 Creating archive in folder: $BACKUP_DIR/$FOLDER_NAME"
 
-          FILES_LIST="/tmp/downloaded_files.txt"
+          # Find all files in BASE_DIR
           VALID_FILES=()
           
-          if [ -f "$FILES_LIST" ]; then
+          # Read from downloaded_files.txt if exists
+          if [ -f "/tmp/downloaded_files.txt" ] && [ -s "/tmp/downloaded_files.txt" ]; then
             while IFS= read -r FILE; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 VALID_FILES+=("$FILE")
                 SIZE_MB=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
                 echo "   ✅ Added: $(basename "$FILE") (${SIZE_MB})"
               fi
-            done < "$FILES_LIST"
+            done < /tmp/downloaded_files.txt
+          fi
+          
+          # Also find any files directly in BASE_DIR
+          if [ -d "$BASE_DIR" ]; then
+            for FILE in "$BASE_DIR"/*; do
+              if [ -f "$FILE" ] && [ -s "$FILE" ]; then
+                # Check if already added
+                FOUND=0
+                for ADDED in "${VALID_FILES[@]}"; do
+                  if [ "$ADDED" = "$FILE" ]; then
+                    FOUND=1
+                    break
+                  fi
+                done
+                if [ $FOUND -eq 0 ]; then
+                  VALID_FILES+=("$FILE")
+                  SIZE_MB=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
+                  echo "   ✅ Added: $(basename "$FILE") (${SIZE_MB})"
+                fi
+              fi
+            done
           fi
 
           if [ ${#VALID_FILES[@]} -eq 0 ]; then
             echo "❌ No valid files to archive!"
+            echo "Searching in: $BASE_DIR"
+            ls -la "$BASE_DIR" 2>/dev/null || echo "Directory empty or not found"
             exit 1
           fi
 
@@ -567,12 +605,10 @@ jobs:
             echo "---"
           } >> README.md
 
-      - name: Incremental Commit & Push
+      - name: Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-
-          echo "Incremental Push Mode"
 
           BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
           echo "Total files to push: $BACKUP_FILE_COUNT"
@@ -582,232 +618,38 @@ jobs:
             exit 0
           fi
 
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
-
-          regenerate_downloads_readme() {
-            DOWNLOADS_README="downloads/README.md"
-            {
-              echo "# 📥 Downloads from Telegram"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📁 Available Downloads"
-              echo ""
-            } > "$DOWNLOADS_README"
-
-            for folder in downloads/*/; do
-              [ -d "$folder" ] || continue
-              FOLDER_NAME=$(basename "$folder")
-              [ -f "$folder/README.md" ] || continue
-              FOLDER_ENCODED=$(urlencode "$FOLDER_NAME")
-              printf -- "- [%s](./%s)\n" "$FOLDER_NAME" "$FOLDER_ENCODED" >> "$DOWNLOADS_README"
-            done
-
-            {
-              echo ""
-              echo "---"
-              echo ""
-              echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-            } >> "$DOWNLOADS_README"
-            echo "Downloads README regenerated"
-          }
-
-          push_batch() {
-            local BATCH_SIZE=10
-            local FILES=("$@")
-            local BATCH_COUNT=0
-            local BATCH_FILES=()
-            local TOTAL_PUSHED=0
-            local TOTAL_FILES=${#FILES[@]}
-
-            for FILE in "${FILES[@]}"; do
-              BATCH_FILES+=("$FILE")
-              BATCH_COUNT=$((BATCH_COUNT + 1))
-
-              if [ $BATCH_COUNT -ge $BATCH_SIZE ]; then
-                TOTAL_PUSHED=$((TOTAL_PUSHED + BATCH_COUNT))
-                echo ""
-                echo ">>> Pushing batch ($TOTAL_PUSHED/$TOTAL_FILES files)..."
-
-                git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-                git reset --hard origin/"$BRANCH" 2>/dev/null || true
-
-                mkdir -p downloads
-                cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-
-                for BF in "${BATCH_FILES[@]}"; do
-                  git add -f "$BF" 2>/dev/null || true
-                done
-
-                if ! git diff --cached --quiet 2>/dev/null; then
-                  git commit -m "Add batch of $BATCH_COUNT files [skip ci]" --quiet 2>/dev/null || true
-
-                  local PUSH_RETRY=0
-                  local PUSH_SUCCESS=false
-                  while [ $PUSH_RETRY -lt 5 ]; do
-                    PUSH_RETRY=$((PUSH_RETRY + 1))
-                    echo "    Push attempt $PUSH_RETRY/5..."
-                    if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
-                      PUSH_SUCCESS=true
-                      echo "    ✅ Batch pushed successfully!"
-                      break
-                    else
-                      echo "    ❌ Batch push failed, attempt $PUSH_RETRY/5..."
-                      if [ $PUSH_RETRY -lt 5 ]; then
-                        echo "    Waiting 10 seconds before retry..."
-                        sleep 10
-                        git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-                        git reset --hard origin/"$BRANCH" 2>/dev/null || true
-                        mkdir -p downloads
-                        cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-                        for BF in "${BATCH_FILES[@]}"; do
-                          git add -f "$BF" 2>/dev/null || true
-                        done
-                        if ! git diff --cached --quiet 2>/dev/null; then
-                          git commit -m "Add batch of $BATCH_COUNT files [skip ci]" --quiet 2>/dev/null || true
-                        fi
-                      fi
-                    fi
-                  done
-
-                  if [ "$PUSH_SUCCESS" = false ]; then
-                    echo "    ⚠️ WARNING: Batch push failed after 5 attempts"
-                  fi
-                fi
-
-                BATCH_FILES=()
-                BATCH_COUNT=0
-                sleep 2
-              fi
-            done
-
-            if [ ${#BATCH_FILES[@]} -gt 0 ]; then
-              TOTAL_PUSHED=$((TOTAL_PUSHED + ${#BATCH_FILES[@]}))
-              echo ""
-              echo ">>> Pushing final batch ($TOTAL_PUSHED/$TOTAL_FILES files)..."
-
-              git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-              git reset --hard origin/"$BRANCH" 2>/dev/null || true
-              mkdir -p downloads
-              cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-
-              for BF in "${BATCH_FILES[@]}"; do
-                git add -f "$BF" 2>/dev/null || true
-              done
-
-              if ! git diff --cached --quiet 2>/dev/null; then
-                git commit -m "Add final batch [skip ci]" --quiet 2>/dev/null || true
-
-                local PUSH_RETRY=0
-                while [ $PUSH_RETRY -lt 5 ]; do
-                  PUSH_RETRY=$((PUSH_RETRY + 1))
-                  echo "    Push attempt $PUSH_RETRY/5..."
-                  if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
-                    echo "    ✅ Final batch pushed successfully!"
-                    break
-                  else
-                    echo "    ❌ Push failed, attempt $PUSH_RETRY/5..."
-                    if [ $PUSH_RETRY -lt 5 ]; then
-                      sleep 10
-                      git fetch origin "$BRANCH" --quiet 2>/dev/null || true
-                      git reset --hard origin/"$BRANCH" 2>/dev/null || true
-                      mkdir -p downloads
-                      cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-                      for BF in "${BATCH_FILES[@]}"; do
-                        git add -f "$BF" 2>/dev/null || true
-                      done
-                      if ! git diff --cached --quiet 2>/dev/null; then
-                        git commit -m "Add final batch [skip ci]" --quiet 2>/dev/null || true
-                      fi
-                    fi
-                  fi
-                done
-              fi
-            fi
-          }
-
-          echo ""
-          echo "=========================================="
-          echo "Starting incremental push process..."
-          echo "=========================================="
-
-          git fetch origin "$BRANCH"
-          git reset --hard origin/"$BRANCH"
-
-          mkdir -p downloads
-          cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-
-          echo "Analyzing files to push..."
-          ALL_FILES=()
-
-          while IFS= read -r -d '' FILE; do
-            ALL_FILES+=("$FILE")
-          done < <(find downloads -name "README.md" -print0 2>/dev/null)
-
-          while IFS= read -r -d '' FILE; do
-            ALL_FILES+=("$FILE")
-          done < <(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" \) -print0 2>/dev/null | sort -z)
-
-          TOTAL_FILES=${#ALL_FILES[@]}
-          echo "Found $TOTAL_FILES files to push"
-          echo ""
-
-          if [ $TOTAL_FILES -eq 0 ]; then
-            git add README.md 2>/dev/null || true
-            if ! git diff --cached --quiet 2>/dev/null; then
-              git commit -m "Update README [skip ci]"
-              timeout 120 git push origin HEAD:"$BRANCH" || true
-            fi
-            echo "No download files to push!"
-            exit 0
-          fi
-
-          TOTAL_SIZE=0
-          for F in "${ALL_FILES[@]}"; do
-            if [ -f "$F" ]; then
-              FSIZE=$(stat -c%s "$F" 2>/dev/null || echo 0)
-              TOTAL_SIZE=$((TOTAL_SIZE + FSIZE))
-            fi
-          done
-          TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
-          echo "Total size: ${TOTAL_SIZE_MB}MB"
-          echo ""
-
-          echo "Using incremental batch push (10 files per batch)..."
-          echo ""
-
-          push_batch "${ALL_FILES[@]}"
-
-          echo ""
-          echo "Pushing README files..."
-          git fetch origin "$BRANCH" --quiet 2>/dev/null || true
+          git fetch origin "$BRANCH" 2>/dev/null || true
           git reset --hard origin/"$BRANCH" 2>/dev/null || true
+
           mkdir -p downloads
           cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
 
-          regenerate_downloads_readme
-          git add -f downloads/README.md
+          git add -f downloads/
           git add README.md
 
-          if ! git diff --cached --quiet 2>/dev/null; then
-            git commit -m "Update download list [skip ci]" --quiet 2>/dev/null || true
-
-            PUSH_RETRY=0
-            while [ $PUSH_RETRY -lt 5 ]; do
-              PUSH_RETRY=$((PUSH_RETRY + 1))
-              if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ README pushed!"
+          if ! git diff --cached --quiet; then
+            git commit -m "Download from Telegram post [skip ci]"
+            
+            for i in {1..5}; do
+              echo "Push attempt $i/5..."
+              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Push successful!"
                 break
               else
-                echo "README push failed, retry $PUSH_RETRY/5..."
-                sleep 5
+                echo "Push failed, retry $i/5..."
+                if [ $i -lt 5 ]; then
+                  sleep 10
+                  git fetch origin "$BRANCH" 2>/dev/null || true
+                  git reset --hard origin/"$BRANCH" 2>/dev/null || true
+                  cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
+                  git add -f downloads/
+                  git add README.md
+                  if ! git diff --cached --quiet; then
+                    git commit -m "Download from Telegram post [skip ci]"
+                  fi
+                fi
               fi
             done
           fi
 
-          echo ""
-          echo "=========================================="
-          echo "✅ All files pushed successfully!"
-          echo "=========================================="
+          echo "✅ Done!"
