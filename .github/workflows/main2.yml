@@ -234,7 +234,6 @@ jobs:
             
             if (message.media) {
               console.log(`📥 Downloading media...`);
-              lastLoggedPercent = 0;
               
               let fileName = await getFileNameFromMedia(message.media);
               
@@ -372,11 +371,18 @@ jobs:
               const allDirs = allDownloads.map(d => d.postDir);
               fs.writeFileSync('/tmp/all_post_dirs.txt', allDirs.join('\n'));
               
+              // Also save each post info separately
+              for (const d of allDownloads) {
+                const postInfoFile = `/tmp/post_${d.channel}_${d.postId}.txt`;
+                fs.writeFileSync(postInfoFile, d.postDir);
+              }
+              
               console.log(`\n${'='.repeat(60)}`);
               console.log(`📊 MASTER SUMMARY`);
               console.log(`${'='.repeat(60)}`);
               console.log(`✅ Total posts downloaded: ${allDownloads.length}`);
               console.log(`📁 Total size: ${downloadsInfo.posts.reduce((sum, p) => sum + p.size, 0).toFixed(2)}MB`);
+              console.log(`📁 Post directories saved to: /tmp/all_post_dirs.txt`);
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -415,6 +421,7 @@ jobs:
           DOWNLOAD_EXIT=$?
           if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]); then
             echo "Download completed successfully"
+            echo "POST_DIRS=$(cat /tmp/all_post_dirs.txt)" >> $GITHUB_OUTPUT
             exit 0
           else
             exit $DOWNLOAD_EXIT
@@ -422,7 +429,22 @@ jobs:
 
       - name: Create ZIP archives (without split)
         run: |
-          if [ ! -f "/tmp/all_post_dirs.txt" ]; then
+          echo "📁 Checking for post directories..."
+          
+          # Get directories from multiple sources
+          POST_DIRS=""
+          if [ -f "/tmp/all_post_dirs.txt" ]; then
+            POST_DIRS=$(cat /tmp/all_post_dirs.txt)
+            echo "Found directories in /tmp/all_post_dirs.txt"
+          fi
+          
+          if [ -z "$POST_DIRS" ]; then
+            # Try to find directories manually
+            POST_DIRS=$(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+            echo "Found directories via find: $POST_DIRS"
+          fi
+          
+          if [ -z "$POST_DIRS" ]; then
             echo "❌ No downloads found!"
             exit 1
           fi
@@ -442,7 +464,7 @@ jobs:
           # Clear previous folders list
           > /tmp/folders_list.txt
           
-          while IFS= read -r POST_DIR; do
+          echo "$POST_DIRS" | while read POST_DIR; do
             if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
               continue
             fi
@@ -455,8 +477,10 @@ jobs:
             
             echo ""
             echo "📦 Creating archive for: $CHANNEL_NAME/$POST_ID"
+            echo "   Source: $POST_DIR"
             
             # Copy all files from post directory
+            FILE_COUNT=0
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 ORIGINAL_NAME=$(basename "$FILE")
@@ -464,19 +488,22 @@ jobs:
                 cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/$SAFE_NAME"
                 SIZE=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
                 echo "   ✅ Added: $SAFE_NAME ($SIZE)"
+                FILE_COUNT=$((FILE_COUNT + 1))
               fi
             done
             
-            # Create single zip archive (no split)
-            cd "$BACKUP_DIR/$FOLDER_NAME"
+            if [ $FILE_COUNT -eq 0 ]; then
+              echo "   ⚠️ No files found in post directory!"
+              continue
+            fi
             
-            # Remove existing zip files
-            rm -f *.zip *.z[0-9]* 2>/dev/null || true
+            # Create single zip archive
+            cd "$BACKUP_DIR/$FOLDER_NAME"
             
             ARCHIVE_NAME="${POST_ID}"
             
-            echo "   📀 Creating archive (no size limit)..."
-            zip -r -0 "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
+            echo "   📀 Creating zip archive..."
+            zip -r -9 "${ARCHIVE_NAME}.zip" ./* > /dev/null 2>&1
             
             # Remove original files, keep only zip
             for FILE in *; do
@@ -488,63 +515,73 @@ jobs:
             cd - > /dev/null
             
             # Get archive size
-            ARCHIVE_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
-            ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
+            if [ -f "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" ]; then
+              ARCHIVE_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
+              ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
+              
+              # Create download link
+              FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
+              PART_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
+              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+              
+              # Create README for this post
+              {
+                echo "# 📥 Telegram Post ${POST_ID}"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## 📊 Download Information"
+                echo ""
+                echo "| Property | Value |"
+                echo "|----------|-------|"
+                echo "| **Channel** | \`${CHANNEL_NAME}\` |"
+                echo "| **Post ID** | \`${POST_ID}\` |"
+                echo "| **Archive Size** | ${ARCHIVE_SIZE_MB} MB |"
+                echo "| **Status** | ✅ **Complete** |"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## 🔗 Download Link"
+                echo ""
+                echo "| File | Link |"
+                echo "|------|------|"
+                echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
+                echo ""
+                echo "---"
+                echo ""
+                echo "## 📖 How to Extract"
+                echo ""
+                echo "1. **Download** \`${ARCHIVE_NAME}.zip\`"
+                echo "2. **Extract** with WinRAR, 7-Zip, or any zip tool"
+                echo ""
+                echo "---"
+                echo ""
+                echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
+              } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
+              
+              echo "   ✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
+              
+              # Save folder name for later
+              echo "$FOLDER_NAME" >> /tmp/folders_list.txt
+            else
+              echo "   ❌ Failed to create archive!"
+            fi
             
-            # Create download link
-            FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-            PART_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
-            RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-            
-            # Create README for this post
-            {
-              echo "# 📥 Telegram Post ${POST_ID}"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📊 Download Information"
-              echo ""
-              echo "| Property | Value |"
-              echo "|----------|-------|"
-              echo "| **Channel** | \`${CHANNEL_NAME}\` |"
-              echo "| **Post ID** | \`${POST_ID}\` |"
-              echo "| **Archive Size** | ${ARCHIVE_SIZE_MB} MB |"
-              echo "| **Status** | ✅ **Complete** |"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 🔗 Download Link"
-              echo ""
-              echo "| File | Link |"
-              echo "|------|------|"
-              echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📖 How to Extract"
-              echo ""
-              echo "1. **Download** \`${ARCHIVE_NAME}.zip\`"
-              echo "2. **Extract** with WinRAR, 7-Zip, or any zip tool"
-              echo "3. After extraction, you will find all files from this post"
-              echo ""
-              echo "---"
-              echo ""
-              echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-            } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
-            
-            echo "   ✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
-            
-            # Save folder name for later
-            echo "$FOLDER_NAME" >> /tmp/folders_list.txt
-            
-          done < /tmp/all_post_dirs.txt
+          done
           
           echo ""
           echo "✅ All posts archived successfully!"
+          
+          # Debug: show what was created
+          echo ""
+          echo "📁 Created folders in $BACKUP_DIR:"
+          ls -la "$BACKUP_DIR/"
 
       - name: Copy to downloads folder and update README
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
+          
+          echo "📁 Backup directory: $BACKUP_DIR"
           
           # Create downloads directory
           mkdir -p downloads
@@ -553,19 +590,24 @@ jobs:
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             cp -r "$BACKUP_DIR"/* downloads/
             echo "✅ Copied archives to downloads folder"
+            echo "Contents of downloads:"
+            ls -la downloads/
+          else
+            echo "❌ Backup directory is empty or doesn't exist!"
+            exit 1
           fi
           
           # Get all folder names from downloads
-          if [ -f "/tmp/folders_list.txt" ]; then
-            FOLDERS=$(cat /tmp/folders_list.txt | sort -u)
-          else
-            FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-          fi
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
           
           if [ -z "$FOLDERS" ]; then
-            echo "No folders found in downloads"
-            exit 0
+            echo "❌ No folders found in downloads!"
+            echo "Contents of downloads:"
+            ls -la downloads/
+            exit 1
           fi
+          
+          echo "📁 Found folders: $FOLDERS"
           
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
@@ -681,6 +723,12 @@ jobs:
       - name: Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
+          
+          # Check if downloads folder has content
+          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "❌ No files to commit!"
+            exit 1
+          fi
           
           # Add all files
           git add -f downloads/
