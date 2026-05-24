@@ -556,7 +556,7 @@ jobs:
             
             cd - > /dev/null
             
-            # Count parts
+            # Count parts and calculate total size
             LINK_NUM=0
             TOTAL_ARCHIVE_SIZE=0
             
@@ -579,59 +579,59 @@ jobs:
             }
             
             FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-            DOWNLOAD_LINKS_MD=""
-            LINK_NUM=0
             
+            # Build download links
+            DOWNLOAD_LINKS=""
+            LINK_COUNT=0
             for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
               [ -f "$part_file" ] || continue
               PART_BASENAME=$(basename "$part_file")
               PART_ENCODED=$(urlencode "${PART_BASENAME}")
               RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-              LINK_NUM=$((LINK_NUM + 1))
-              DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+              LINK_COUNT=$((LINK_COUNT + 1))
+              DOWNLOAD_LINKS="${DOWNLOAD_LINKS}| ${LINK_COUNT} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
             done
             
             CHANNEL_URL="${{ github.event.inputs.channel_url }}"
             
-            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOT
-            # 📱 Channel Export: ${CHANNEL_NAME} (ZIP Archive)
-            
-            ---
-            
-            ## 📊 Export Information
-            
-            | Property | Value |
-            |----------|-------|
-            | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
-            | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
-            | **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |
-            | **Split Size** | 45 MB per part |
-            | **Status** | ✅ **Complete** |
-            
-            ---
-            
-            ## 🔗 Download Links
-            
-            | # | File | Link |
-            |---|------|------|
-            ${DOWNLOAD_LINKS_MD}
-            
-            ---
-            
-            ## 📖 How to Extract
-            
-            1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)
-            2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip
-            3. **Extract** — all parts combine automatically
-            4. Open \`index.html\` in your browser to browse messages
-            
-            ---
-            
-            *🛠️ Created by [avasam.ir](https://avasam.ir)*
-            EOT
+            README_FILE="$BACKUP_DIR/$FOLDER_NAME/README.md"
+            echo "# 📱 Channel Export: ${CHANNEL_NAME} (ZIP Archive)" > "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 📊 Export Information" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "| Property | Value |" >> "$README_FILE"
+            echo "|----------|-------|" >> "$README_FILE"
+            echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |" >> "$README_FILE"
+            echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |" >> "$README_FILE"
+            echo "| **Total Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_COUNT} parts) |" >> "$README_FILE"
+            echo "| **Split Size** | 45 MB per part |" >> "$README_FILE"
+            echo "| **Status** | ✅ **Complete** |" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 🔗 Download Links" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "| # | File | Link |" >> "$README_FILE"
+            echo "|---|------|------|" >> "$README_FILE"
+            printf '%s' "$DOWNLOAD_LINKS" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 📖 How to Extract" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)" >> "$README_FILE"
+            echo "2. **Open** \`${ARCHIVE_NAME}.zip\` with WinRAR or 7-Zip" >> "$README_FILE"
+            echo "3. **Extract** — all parts combine automatically" >> "$README_FILE"
+            echo "4. Open \`index.html\` in your browser to browse messages" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*" >> "$README_FILE"
             
             echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
-            echo "✅ ZIP archive created (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB total)"
+            echo "✅ ZIP archive created (${LINK_COUNT} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB total)"
             
           else
             # Normal output - copy the folder structure with already split files
@@ -645,51 +645,49 @@ jobs:
             TOTAL_FILES=$(find "$EXPORT_DIR" -type f | wc -l)
             TOTAL_SIZE=$(du -sh "$EXPORT_DIR" | cut -f1)
             
-            # Create README for normal output
             CHANNEL_URL="${{ github.event.inputs.channel_url }}"
             
-            cat > "$BACKUP_DIR/$FOLDER_NAME/README.md" << EOT
-            # 📱 Channel Export: ${CHANNEL_NAME}
-            
-            ---
-            
-            ## 📊 Export Information
-            
-            | Property | Value |
-            |----------|-------|
-            | **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |
-            | **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |
-            | **Total Files** | ${TOTAL_FILES} files |
-            | **Total Size** | ${TOTAL_SIZE} |
-            | **Status** | ✅ **Complete** |
-            
-            ---
-            
-            ## 📁 Folder Structure
-            
-            \`\`\`
-            ${CHANNEL_NAME}/
-            ├── channel_info.json      # Channel metadata
-            ├── export_summary.json    # Export statistics
-            ├── index.html            # Browse all messages
-            └── [message_id]/         # Individual messages
-                ├── message.json      # Message metadata
-                ├── message.txt       # Message text
-                └── media files       # Downloaded media (split if >45MB)
-            \`\`\`
-            
-            ---
-            
-            ## 📖 How to Browse
-            
-            1. Navigate into the \`${CHANNEL_NAME}\` folder
-            2. Open \`index.html\` in your browser
-            3. Click on any message ID to view its media files
-            
-            ---
-            
-            *🛠️ Created by [avasam.ir](https://avasam.ir)*
-            EOT
+            README_FILE="$BACKUP_DIR/$FOLDER_NAME/README.md"
+            echo "# 📱 Channel Export: ${CHANNEL_NAME}" > "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 📊 Export Information" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "| Property | Value |" >> "$README_FILE"
+            echo "|----------|-------|" >> "$README_FILE"
+            echo "| **Channel** | [${CHANNEL_URL}](${CHANNEL_URL}) |" >> "$README_FILE"
+            echo "| **Export Date** | $(date '+%Y-%m-%d %H:%M:%S') |" >> "$README_FILE"
+            echo "| **Total Files** | ${TOTAL_FILES} files |" >> "$README_FILE"
+            echo "| **Total Size** | ${TOTAL_SIZE} |" >> "$README_FILE"
+            echo "| **Status** | ✅ **Complete** |" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 📁 Folder Structure" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo '```' >> "$README_FILE"
+            echo "${CHANNEL_NAME}/" >> "$README_FILE"
+            echo "├── channel_info.json      # Channel metadata" >> "$README_FILE"
+            echo "├── export_summary.json    # Export statistics" >> "$README_FILE"
+            echo "├── index.html            # Browse all messages" >> "$README_FILE"
+            echo "└── [message_id]/         # Individual messages" >> "$README_FILE"
+            echo "    ├── message.json      # Message metadata" >> "$README_FILE"
+            echo "    ├── message.txt       # Message text" >> "$README_FILE"
+            echo "    └── media files       # Downloaded media (split if >45MB)" >> "$README_FILE"
+            echo '```' >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "## 📖 How to Browse" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "1. Navigate into the \`${CHANNEL_NAME}\` folder" >> "$README_FILE"
+            echo "2. Open \`index.html\` in your browser" >> "$README_FILE"
+            echo "3. Click on any message ID to view its media files" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "---" >> "$README_FILE"
+            echo "" >> "$README_FILE"
+            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*" >> "$README_FILE"
             
             echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
             echo "✅ Normal folder structure created (${TOTAL_SIZE}, ${TOTAL_FILES} files)"
@@ -761,8 +759,10 @@ jobs:
                 else
                   SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB || "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
-                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B|[0-9.]+ MB' | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                elif [[ "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
+                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B' | head -1)
                 fi
               fi
               
@@ -841,8 +841,10 @@ jobs:
                 else
                   SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 fi
-                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB || "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
-                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B|[0-9.]+ MB' | head -1)
+                if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
+                  SIZE="${BASH_REMATCH[1]} MB"
+                elif [[ "$SIZE_LINE" =~ ([0-9.]+[[:space:]]+[KMGT]?B) ]]; then
+                  SIZE=$(echo "$SIZE_LINE" | grep -oE '[0-9.]+ [KMGT]?B' | head -1)
                 fi
               fi
               
