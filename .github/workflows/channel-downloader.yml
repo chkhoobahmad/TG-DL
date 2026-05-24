@@ -10,7 +10,7 @@ on:
       output_type:
         description: 'نوع خروجی (normal: ساختار پوشه‌ای - zip: فایل زیپ چند قسمتی)'
         required: false
-        default: 'normal'
+        default: 'zip'
         type: choice
         options:
           - normal
@@ -67,6 +67,38 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
+
+      - name: Setup Git LFS
+        run: |
+          git lfs install
+          git lfs track "*.mp4"
+          git lfs track "*.mkv"
+          git lfs track "*.avi"
+          git lfs track "*.mov"
+          git lfs track "*.zip"
+          git lfs track "*.z01"
+          git lfs track "*.z02"
+          git lfs track "*.z03"
+          git lfs track "*.z04"
+          git lfs track "*.z05"
+          git lfs track "*.z06"
+          git lfs track "*.z07"
+          git lfs track "*.z08"
+          git lfs track "*.z09"
+          git lfs track "*.z10"
+          git lfs track "*.z11"
+          git lfs track "*.z12"
+          git lfs track "*.z13"
+          git lfs track "*.z14"
+          git lfs track "*.z15"
+          git lfs track "*.z16"
+          git lfs track "*.z17"
+          git lfs track "*.z18"
+          git lfs track "*.z19"
+          git lfs track "*.z20"
+          git add .gitattributes
+          git commit -m "Configure Git LFS for media files" || true
+          git push origin HEAD:"${GITHUB_REF_NAME}" || true
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -860,41 +892,172 @@ jobs:
           
           echo "✅ Root README.md updated"
 
-      - name: Commit & Push
+      - name: Incremental Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
           # Ensure downloads directory exists
           mkdir -p downloads
           
-          # Add all files
-          git add -f downloads/
-          git add README.md
-          
+          # First, commit and push README files (small)
+          echo "📝 Committing README files..."
+          git add -f downloads/README.md downloads/*/README.md README.md 2>/dev/null || true
           if ! git diff --cached --quiet; then
-            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            git commit -m "Export channel - $TIMESTAMP [skip ci]"
-            
-            for i in {1..5}; do
-              echo "Push attempt $i/5..."
-              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Push successful!"
+            git commit -m "Update README files [skip ci]" || true
+            for i in 1 2 3; do
+              if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ README files pushed!"
                 break
-              else
-                echo "Push failed, retry $i/5..."
-                if [ $i -lt 5 ]; then
-                  sleep 10
-                  git pull --rebase origin "$BRANCH" 2>/dev/null || true
-                  git add -f downloads/
-                  git add README.md
-                  if ! git diff --cached --quiet; then
-                    git commit -m "Export channel - $TIMESTAMP [skip ci]"
+              fi
+              sleep 5
+            done
+          fi
+          
+          # Commit channel info files
+          echo "📝 Committing channel metadata..."
+          git add -f downloads/*/channel_info.json downloads/*/export_summary.json downloads/*/index.html 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Add channel metadata [skip ci]" || true
+            for i in 1 2 3; do
+              if timeout 60 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Metadata files pushed!"
+                break
+              fi
+              sleep 5
+            done
+          fi
+          
+          # Commit message.json and message.txt files in batches
+          echo "📝 Committing message files in batches..."
+          MESSAGE_FILES=$(find downloads -name "message.json" -o -name "message.txt" 2>/dev/null | sort)
+          
+          if [ -n "$MESSAGE_FILES" ]; then
+            BATCH_SIZE=20
+            BATCH=()
+            COUNT=0
+            BATCH_NUM=1
+            
+            for FILE in $MESSAGE_FILES; do
+              BATCH+=("$FILE")
+              COUNT=$((COUNT + 1))
+              
+              if [ $COUNT -ge $BATCH_SIZE ]; then
+                echo "   Pushing batch $BATCH_NUM ($COUNT files)..."
+                git add -f "${BATCH[@]}" 2>/dev/null || true
+                if ! git diff --cached --quiet; then
+                  git commit -m "Add message files batch $BATCH_NUM [skip ci]" || true
+                  for i in 1 2 3; do
+                    if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
+                      echo "   ✅ Batch $BATCH_NUM pushed!"
+                      break
+                    fi
+                    sleep 10
+                  done
+                fi
+                BATCH=()
+                COUNT=0
+                BATCH_NUM=$((BATCH_NUM + 1))
+              fi
+            done
+            
+            # Push remaining files
+            if [ ${#BATCH[@]} -gt 0 ]; then
+              echo "   Pushing final batch ($COUNT files)..."
+              git add -f "${BATCH[@]}" 2>/dev/null || true
+              if ! git diff --cached --quiet; then
+                git commit -m "Add remaining message files [skip ci]" || true
+                for i in 1 2 3; do
+                  if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
+                    echo "   ✅ Final batch pushed!"
+                    break
                   fi
+                  sleep 10
+                done
+              fi
+            fi
+          fi
+          
+          # Commit media files (split zip files) in small batches
+          echo "📝 Committing media files in small batches..."
+          MEDIA_FILES=$(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" -o -name "*.mp4" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) 2>/dev/null | sort)
+          
+          if [ -n "$MEDIA_FILES" ]; then
+            BATCH_SIZE=5
+            BATCH=()
+            COUNT=0
+            BATCH_NUM=1
+            
+            for FILE in $MEDIA_FILES; do
+              # Check file size
+              FILE_SIZE=$(stat -c%s "$FILE" 2>/dev/null || echo 0)
+              if [ $FILE_SIZE -gt 10000000 ]; then
+                # Large file - push individually
+                echo "   Pushing large file individually: $(basename "$FILE") ($(($FILE_SIZE/1024/1024))MB)..."
+                git add -f "$FILE" 2>/dev/null || true
+                if ! git diff --cached --quiet; then
+                  git commit -m "Add media file $BATCH_NUM [skip ci]" || true
+                  for i in 1 2 3; do
+                    if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
+                      echo "   ✅ Large file pushed!"
+                      break
+                    fi
+                    sleep 15
+                  done
+                fi
+                BATCH_NUM=$((BATCH_NUM + 1))
+              else
+                BATCH+=("$FILE")
+                COUNT=$((COUNT + 1))
+                
+                if [ $COUNT -ge $BATCH_SIZE ]; then
+                  echo "   Pushing media batch $BATCH_NUM ($COUNT files)..."
+                  git add -f "${BATCH[@]}" 2>/dev/null || true
+                  if ! git diff --cached --quiet; then
+                    git commit -m "Add media files batch $BATCH_NUM [skip ci]" || true
+                    for i in 1 2 3; do
+                      if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
+                        echo "   ✅ Media batch $BATCH_NUM pushed!"
+                        break
+                      fi
+                      sleep 15
+                    done
+                  fi
+                  BATCH=()
+                  COUNT=0
+                  BATCH_NUM=$((BATCH_NUM + 1))
                 fi
               fi
             done
-          else
-            echo "No changes to commit"
+            
+            # Push remaining media files
+            if [ ${#BATCH[@]} -gt 0 ]; then
+              echo "   Pushing final media batch ($COUNT files)..."
+              git add -f "${BATCH[@]}" 2>/dev/null || true
+              if ! git diff --cached --quiet; then
+                git commit -m "Add remaining media files [skip ci]" || true
+                for i in 1 2 3; do
+                  if timeout 180 git push origin HEAD:"$BRANCH" 2>&1; then
+                    echo "   ✅ Final media batch pushed!"
+                    break
+                  fi
+                  sleep 15
+                done
+              fi
+            fi
+          fi
+          
+          # Final push for any remaining files
+          echo "📝 Finalizing..."
+          git add -f downloads/ 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Final updates [skip ci]" || true
+            for i in 1 2 3; do
+              if timeout 120 git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Final push successful!"
+                break
+              fi
+              sleep 10
+            done
           fi
           
           echo ""
