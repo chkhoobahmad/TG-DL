@@ -188,7 +188,6 @@ jobs:
             
             const { chatId, msgId } = await extractChatAndMsgId(postUrl);
             
-            // Get chat entity
             let chat;
             if (chatId.toString().startsWith('-100')) {
               chat = await client.getEntity(parseInt(chatId));
@@ -196,7 +195,6 @@ jobs:
               chat = await client.getEntity(chatId);
             }
             
-            // Get channel name
             let channelName = "unknown_channel";
             if (chat.username) {
               channelName = chat.username;
@@ -206,7 +204,6 @@ jobs:
               channelName = chatId.toString().replace('-100', '');
             }
             
-            // Get the target message
             const messages = await client.getMessages(chat, { ids: msgId });
             const message = messages[0];
             
@@ -216,7 +213,6 @@ jobs:
             
             console.log(`✅ Message found!`);
             
-            // Create directory structure: /tmp/telegram_downloads/channel_name/post_id/
             const baseTempDir = `/tmp/telegram_downloads`;
             const channelDir = path.join(baseTempDir, channelName);
             const postDir = path.join(channelDir, String(msgId));
@@ -228,7 +224,6 @@ jobs:
             
             const downloadedFiles = [];
             
-            // Save message text
             if (message.text && message.text.length > 0) {
               const textFile = path.join(postDir, 'message_text.txt');
               fs.writeFileSync(textFile, message.text);
@@ -236,7 +231,6 @@ jobs:
               console.log(`📝 Saved message text (${message.text.length} characters)`);
             }
             
-            // Download media if exists
             if (message.media) {
               console.log(`📥 Downloading media...`);
               lastLoggedPercent = 0;
@@ -292,7 +286,6 @@ jobs:
               console.log(`⚠️ No media found in this post`);
             }
             
-            // Save post info
             const infoFile = path.join(postDir, 'post_info.json');
             const totalSizeMB = downloadedFiles.reduce((sum, f) => {
               try {
@@ -327,7 +320,8 @@ jobs:
               postId: msgId,
               postDir: postDir,
               files: downloadedFiles,
-              size: totalSizeMB
+              size: totalSizeMB,
+              url: postUrl
             };
           }
 
@@ -355,25 +349,22 @@ jobs:
               
               console.log('✅ Connected successfully!\n');
               
-              // Download each post
               for (let i = 0; i < postUrls.length; i++) {
                 const result = await downloadPost(client, postUrls[i], i, postUrls.length);
                 allDownloads.push(result);
               }
               
-              // Save list of all downloaded posts
               const allPostsList = '/tmp/all_posts.txt';
               const allDirs = allDownloads.map(d => d.postDir);
               fs.writeFileSync(allPostsList, allDirs.join('\n'));
               
-              // Create master summary
               const masterSummary = {
                 totalPosts: allDownloads.length,
                 downloadDate: new Date().toISOString(),
                 posts: allDownloads.map(d => ({
                   channel: d.channel,
                   postId: d.postId,
-                  url: postUrls[allDownloads.indexOf(d)],
+                  url: d.url,
                   totalFiles: d.files.length,
                   totalSizeMB: d.size
                 }))
@@ -387,17 +378,18 @@ jobs:
               console.log(`${'='.repeat(60)}`);
               console.log(`✅ Total posts downloaded: ${allDownloads.length}`);
               console.log(`📁 Total size: ${masterSummary.posts.reduce((sum, p) => sum + p.totalSizeMB, 0).toFixed(2)}MB`);
-              console.log(`\n📁 Download directories saved to: /tmp/all_posts.txt`);
               
-              // Write output for next steps (save all directories)
               const outputFile = process.env.GITHUB_OUTPUT;
               if (outputFile) {
                 fs.appendFileSync(outputFile, `ALL_DIRS=${allDirs.join(',')}\n`);
                 fs.appendFileSync(outputFile, `TOTAL_POSTS=${allDownloads.length}\n`);
               }
               
-              // Also write to a file as fallback
               fs.writeFileSync('/tmp/all_dirs.txt', allDirs.join('\n'));
+              
+              // Save downloads list for README update
+              const downloadsList = allDownloads.map(d => `${d.channel}_${d.postId}`).join('\n');
+              fs.writeFileSync('/tmp/downloads_list.txt', downloadsList);
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -415,7 +407,6 @@ jobs:
             }
           }
           
-          // Ignore timeout errors after successful download
           process.on('unhandledRejection', (err) => {
             if (err.message && err.message.includes('TIMEOUT')) {
               console.log('⚠️ Ignoring timeout error (download completed successfully)');
@@ -432,10 +423,8 @@ jobs:
           });
           EOF
 
-          # Run the download script
           node download_telegram.js
           
-          # Ensure exit code is 0 even if timeout error occurred but download succeeded
           DOWNLOAD_EXIT=$?
           if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/all_posts.txt" ] && [ -s "/tmp/all_posts.txt" ]); then
             echo "Download completed successfully (exit code: $DOWNLOAD_EXIT)"
@@ -446,7 +435,6 @@ jobs:
 
       - name: Process and Archive All Downloads
         run: |
-          # Read all directories from the list
           if [ -f "/tmp/all_dirs.txt" ]; then
             ALL_DIRS=$(cat /tmp/all_dirs.txt)
           else
@@ -467,235 +455,5 @@ jobs:
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          # Process each post directory
-          echo "$ALL_DIRS" | while read POST_DIR; do
-            if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
-              continue
-            fi
-            
-            CHANNEL_NAME=$(basename $(dirname "$POST_DIR"))
-            POST_ID=$(basename "$POST_DIR")
-            FOLDER_NAME="${CHANNEL_NAME}_${POST_ID}"
-            
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
-            
-            echo ""
-            echo "📦 Creating archive for: $CHANNEL_NAME/$POST_ID"
-            echo "   Target: $BACKUP_DIR/$FOLDER_NAME"
-            
-            # Copy all files from post directory
-            for FILE in "$POST_DIR"/*; do
-              if [ -f "$FILE" ] && [ -s "$FILE" ]; then
-                ORIGINAL_NAME=$(basename "$FILE")
-                SAFE_NAME=$(echo "$ORIGINAL_NAME" | sed 's/[<>:"|?*]/_/g')
-                cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/$SAFE_NAME"
-                SIZE=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
-                echo "      ✅ Added: $SAFE_NAME ($SIZE)"
-              fi
-            done
-            
-            # Create ZIP archive for this post
-            cd "$BACKUP_DIR/$FOLDER_NAME"
-            
-            # Remove any existing zip files
-            rm -f *.zip *.z[0-9]* 2>/dev/null || true
-            
-            # Calculate total size
-            TOTAL_SIZE=0
-            for FILE in *; do
-              if [ -f "$FILE" ]; then
-                SIZE=$(stat -c%s "$FILE")
-                TOTAL_SIZE=$((TOTAL_SIZE + SIZE))
-              fi
-            done
-            TOTAL_SIZE_MB=$((TOTAL_SIZE / 1024 / 1024))
-            
-            ARCHIVE_NAME="${POST_ID}"
-            
-            if [ $TOTAL_SIZE_MB -gt 45 ]; then
-              echo "   📀 Creating split archive (${SPLIT_SIZE_MB}MB per part)..."
-              zip -r -0 -s ${SPLIT_SIZE_MB}m "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
-            else
-              echo "   📀 Creating single archive..."
-              zip -r -0 "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
-            fi
-            
-            # Remove original files after zipping (keep only the zip)
-            for FILE in *; do
-              if [ -f "$FILE" ] && [ "$FILE" != "${ARCHIVE_NAME}.zip" ] && [[ ! "$FILE" =~ \.z[0-9]+$ ]]; then
-                rm -f "$FILE"
-              fi
-            done
-            
-            cd - > /dev/null
-            
-            # Create README for this post
-            FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-            DOWNLOAD_LINKS_MD=""
-            LINK_NUM=0
-            TOTAL_ARCHIVE_SIZE=0
-            
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_BASENAME=$(basename "$part_file")
-              PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
-              PART_SIZE_MB=$(echo "scale=2; $PART_SIZE / 1024 / 1024" | bc)
-              TOTAL_ARCHIVE_SIZE=$((TOTAL_ARCHIVE_SIZE + PART_SIZE))
-              LINK_NUM=$((LINK_NUM + 1))
-            done
-            
-            TOTAL_ARCHIVE_SIZE_MB=$(echo "scale=2; $TOTAL_ARCHIVE_SIZE / 1024 / 1024" | bc)
-            
-            # Generate download links
-            LINK_NUM=0
-            for part_file in $(ls "$BACKUP_DIR/$FOLDER_NAME/"*.zip "$BACKUP_DIR/$FOLDER_NAME/"*.z[0-9]* 2>/dev/null | sort); do
-              [ -f "$part_file" ] || continue
-              PART_BASENAME=$(basename "$part_file")
-              PART_ENCODED=$(urlencode "${PART_BASENAME}")
-              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-              LINK_NUM=$((LINK_NUM + 1))
-              DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
-            done
-            
-            # Read post info if exists
-            POST_INFO_FILE="$BACKUP_DIR/$FOLDER_NAME/post_info.json"
-            if [ ! -f "$POST_INFO_FILE" ]; then
-              # Try to find it in the original directory
-              ORIGINAL_INFO="$POST_DIR/post_info.json"
-              if [ -f "$ORIGINAL_INFO" ]; then
-                cp "$ORIGINAL_INFO" "$BACKUP_DIR/$FOLDER_NAME/"
-              fi
-            fi
-            
-            {
-              echo "# 📥 Telegram Post ${POST_ID}"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📊 Download Information"
-              echo ""
-              echo "| Property | Value |"
-              echo "|----------|-------|"
-              echo "| **Channel** | \`${CHANNEL_NAME}\` |"
-              echo "| **Post ID** | \`${POST_ID}\` |"
-              echo "| **Archive Size** | ${TOTAL_ARCHIVE_SIZE_MB} MB (${LINK_NUM} parts) |"
-              echo "| **Status** | ✅ **Complete** |"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 🔗 Download Links"
-              echo ""
-              echo "| # | File | Link |"
-              echo "|---|------|------|"
-              printf '%s' "${DOWNLOAD_LINKS_MD}"
-              echo ""
-              echo "---"
-              echo ""
-              echo "## 📖 How to Extract"
-              echo ""
-              echo "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
-              echo "2. **Open** \`${POST_ID}.zip\` with WinRAR or 7-Zip"
-              echo "3. **Extract** — all parts combine automatically"
-              echo ""
-              echo "---"
-              echo ""
-              echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-            } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
-            
-            echo "   ✅ Archive created for post ${POST_ID} (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB)"
-          done
-          
-          echo ""
-          echo "✅ All posts archived successfully!"
-
-      - name: Update main README.md
-        run: |
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          REPO_OWNER="${{ github.repository_owner }}"
-          REPO_NAME="${{ github.event.repository.name }}"
-          BRANCH="${GITHUB_REF_NAME}"
-          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
-
-          mkdir -p downloads
-          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            cp -r "$BACKUP_DIR"/* downloads/
-          fi
-
-          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-
-          if [ -z "$FOLDERS" ]; then
-            echo "No folders found in downloads"
-            exit 0
-          fi
-
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
-
-          {
-            echo "# 📥 Downloads from Telegram"
-            echo ""
-            echo "---"
-            echo ""
-            echo "## 📁 Available Downloads"
-            echo ""
-            for FOLDER in $FOLDERS; do
-              if [ -n "$FOLDER" ]; then
-                FOLDER_ENCODED=$(urlencode "${FOLDER}")
-                echo "- [${FOLDER}](./${FOLDER_ENCODED})"
-              fi
-            done
-            echo ""
-            echo "---"
-            echo ""
-            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-          } > "downloads/README.md"
-
-      - name: Commit & Push
-        run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-
-          BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
-          echo "Total files to push: $BACKUP_FILE_COUNT"
-
-          if [ "$BACKUP_FILE_COUNT" -eq 0 ]; then
-            echo "Nothing to push"
-            exit 0
-          fi
-
-          git fetch origin "$BRANCH" 2>/dev/null || true
-          git reset --hard origin/"$BRANCH" 2>/dev/null || true
-
-          mkdir -p downloads
-          cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-
-          git add -f downloads/
-          git add README.md
-
-          if ! git diff --cached --quiet; then
-            git commit -m "Download multiple Telegram posts [skip ci]"
-            
-            for i in {1..5}; do
-              echo "Push attempt $i/5..."
-              if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Push successful!"
-                break
-              else
-                echo "Push failed, retry $i/5..."
-                if [ $i -lt 5 ]; then
-                  sleep 10
-                  git fetch origin "$BRANCH" 2>/dev/null || true
-                  git reset --hard origin/"$BRANCH" 2>/dev/null || true
-                  cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-                  git add -f downloads/
-                  git add README.md
-                  if ! git diff --cached --quiet; then
-                    git commit -m "Download multiple Telegram posts [skip ci]"
-                  fi
-                fi
-              fi
-            done
-          fi
-
-          echo "✅ Done!"
+          # لیست برای ذخیره نام پوشه‌های ایجاد شده
+>
