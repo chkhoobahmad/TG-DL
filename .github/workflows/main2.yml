@@ -354,30 +354,30 @@ jobs:
                 allDownloads.push(result);
               }
               
-              const allPostsList = '/tmp/all_posts.txt';
-              const allDirs = allDownloads.map(d => d.postDir);
-              fs.writeFileSync(allPostsList, allDirs.join('\n'));
-              
               // Save downloads info for later steps
               const downloadsInfo = {
                 totalPosts: allDownloads.length,
                 downloadDate: new Date().toISOString(),
-                posts: allDownloads
+                posts: allDownloads.map(d => ({
+                  channel: d.channel,
+                  postId: d.postId,
+                  url: d.url,
+                  postDir: d.postDir,
+                  size: d.size
+                }))
               };
               
               fs.writeFileSync('/tmp/downloads_info.json', JSON.stringify(downloadsInfo, null, 2));
+              
+              // Save list of post directories
+              const allDirs = allDownloads.map(d => d.postDir);
+              fs.writeFileSync('/tmp/all_post_dirs.txt', allDirs.join('\n'));
               
               console.log(`\n${'='.repeat(60)}`);
               console.log(`📊 MASTER SUMMARY`);
               console.log(`${'='.repeat(60)}`);
               console.log(`✅ Total posts downloaded: ${allDownloads.length}`);
               console.log(`📁 Total size: ${downloadsInfo.posts.reduce((sum, p) => sum + p.size, 0).toFixed(2)}MB`);
-              console.log(`\n📁 Download directories saved to: /tmp/all_posts.txt`);
-              
-              const outputFile = process.env.GITHUB_OUTPUT;
-              if (outputFile) {
-                fs.appendFileSync(outputFile, `TOTAL_POSTS=${allDownloads.length}\n`);
-              }
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -414,18 +414,16 @@ jobs:
           node download_telegram.js
           
           DOWNLOAD_EXIT=$?
-          if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/all_posts.txt" ] && [ -s "/tmp/all_posts.txt" ]); then
-            echo "Download completed successfully (exit code: $DOWNLOAD_EXIT)"
+          if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]); then
+            echo "Download completed successfully"
             exit 0
           else
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Process and Archive All Downloads
+      - name: Create ZIP archives for each post
         run: |
-          if [ -f "/tmp/all_posts.txt" ]; then
-            ALL_DIRS=$(cat /tmp/all_posts.txt)
-          else
+          if [ ! -f "/tmp/all_post_dirs.txt" ]; then
             echo "❌ No downloads found!"
             exit 1
           fi
@@ -443,10 +441,8 @@ jobs:
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          # Create an array to store folder names
-          declare -a FOLDER_NAMES
-          
-          echo "$ALL_DIRS" | while read POST_DIR; do
+          # Read all post directories
+          while IFS= read -r POST_DIR; do
             if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
               continue
             fi
@@ -454,28 +450,30 @@ jobs:
             CHANNEL_NAME=$(basename $(dirname "$POST_DIR"))
             POST_ID=$(basename "$POST_DIR")
             FOLDER_NAME="${CHANNEL_NAME}_${POST_ID}"
-            FOLDER_NAMES+=("$FOLDER_NAME")
             
             mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
             
             echo ""
             echo "📦 Creating archive for: $CHANNEL_NAME/$POST_ID"
-            echo "   Target: $BACKUP_DIR/$FOLDER_NAME"
             
+            # Copy all files from post directory
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 ORIGINAL_NAME=$(basename "$FILE")
                 SAFE_NAME=$(echo "$ORIGINAL_NAME" | sed 's/[<>:"|?*]/_/g')
                 cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/$SAFE_NAME"
                 SIZE=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
-                echo "      ✅ Added: $SAFE_NAME ($SIZE)"
+                echo "   ✅ Added: $SAFE_NAME ($SIZE)"
               fi
             done
             
+            # Create zip archive
             cd "$BACKUP_DIR/$FOLDER_NAME"
             
+            # Remove existing zip files
             rm -f *.zip *.z[0-9]* 2>/dev/null || true
             
+            # Calculate total size
             TOTAL_SIZE=0
             for FILE in *; do
               if [ -f "$FILE" ]; then
@@ -495,6 +493,7 @@ jobs:
               zip -r -0 "${ARCHIVE_NAME}.zip" ./* 2>/dev/null
             fi
             
+            # Remove original files, keep only zip
             for FILE in *; do
               if [ -f "$FILE" ] && [ "$FILE" != "${ARCHIVE_NAME}.zip" ] && [[ ! "$FILE" =~ \.z[0-9]+$ ]]; then
                 rm -f "$FILE"
@@ -503,6 +502,7 @@ jobs:
             
             cd - > /dev/null
             
+            # Create README for this post
             FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
             DOWNLOAD_LINKS_MD=""
             LINK_NUM=0
@@ -562,16 +562,17 @@ jobs:
               echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
             } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
             
-            echo "   ✅ Archive created for post ${POST_ID} (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB)"
-          done
-          
-          # Save folder names for next step
-          printf "%s\n" "${FOLDER_NAMES[@]}" > /tmp/folder_names.txt
+            echo "   ✅ Archive created (${LINK_NUM} parts, ${TOTAL_ARCHIVE_SIZE_MB}MB)"
+            
+            # Save folder name for later
+            echo "$FOLDER_NAME" >> /tmp/folders_list.txt
+            
+          done < /tmp/all_post_dirs.txt
           
           echo ""
           echo "✅ All posts archived successfully!"
 
-      - name: Update main README.md
+      - name: Copy to downloads folder and update README
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
@@ -581,10 +582,15 @@ jobs:
           # Copy all archived folders to downloads
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             cp -r "$BACKUP_DIR"/* downloads/
+            echo "✅ Copied archives to downloads folder"
           fi
           
-          # Get all folder names (each post archive)
-          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+          # Get all folder names from downloads
+          if [ -f "/tmp/folders_list.txt" ]; then
+            FOLDERS=$(cat /tmp/folders_list.txt | sort -u)
+          else
+            FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+          fi
           
           if [ -z "$FOLDERS" ]; then
             echo "No folders found in downloads"
@@ -595,56 +601,60 @@ jobs:
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          # Generate downloads/README.md with proper links
-          {
-            echo "# 📥 Downloads from Telegram"
-            echo ""
-            echo "This folder contains downloaded posts from Telegram channels."
-            echo ""
-            echo "---"
-            echo ""
-            echo "## 📁 Available Downloads"
-            echo ""
-            echo "| # | Post | Size |"
-            echo "|---|------|------|"
-          } > "downloads/README.md"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+          
+          # Generate downloads/README.md
+          cat > downloads/README.md << 'EOF'
+          # 📥 Downloads from Telegram
+          
+          This folder contains downloaded posts from Telegram channels.
+          
+          ---
+          
+          ## 📁 Available Downloads
+          
+          | # | Post | Size | Date |
+          |---|------|------|------|
+          EOF
           
           COUNTER=1
           for FOLDER in $FOLDERS; do
             if [ -n "$FOLDER" ]; then
               FOLDER_ENCODED=$(urlencode "${FOLDER}")
-              # Try to get size from README or calculate
               SIZE="Unknown"
+              DATE=$(date '+%Y-%m-%d')
+              
+              # Extract size from post's README
               if [ -f "downloads/$FOLDER/README.md" ]; then
                 SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
               fi
-              echo "| ${COUNTER} | [${FOLDER}](./${FOLDER_ENCODED}) | ${SIZE} |" >> "downloads/README.md"
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> downloads/README.md
               COUNTER=$((COUNTER + 1))
             fi
           done
           
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "## 📖 How to use"
-            echo ""
-            echo "1. Click on any post folder above"
-            echo "2. Download all parts of the zip file"
-            echo "3. Extract the first part (.zip) to get all files"
-            echo ""
-            echo "---"
-            echo ""
-            echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-          } >> "downloads/README.md"
+          cat >> downloads/README.md << 'EOF'
           
-          echo ""
-          echo "✅ downloads/README.md updated with ${COUNTER} download(s)"
+          ---
           
-          # Also update the root README.md if it exists
+          ## 📖 How to use
+          
+          1. Click on any post folder above
+          2. Download all parts of the zip file
+          3. Extract the first part (.zip) to get all files
+          
+          ---
+          
+          *🛠️ Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          
+          echo "✅ downloads/README.md created with $((COUNTER - 1)) download(s)"
+          
+          # Also update root README.md
           ROOT_README="README.md"
           SECTION_TITLE="📥 دانلود‌های تلگرام"
           
@@ -652,8 +662,6 @@ jobs:
             echo "# AVASAM Telegram Downloader" > "$ROOT_README"
             echo "" >> "$ROOT_README"
             echo "دانلود خودکار فایل‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
-            echo "" >> "$ROOT_README"
-            echo "---" >> "$ROOT_README"
             echo "" >> "$ROOT_README"
           fi
           
@@ -670,8 +678,8 @@ jobs:
             echo ""
             echo "## $SECTION_TITLE"
             echo ""
-            echo "| # | Post | Size |"
-            echo "|---|------|------|"
+            echo "| # | Post | Size | Date |"
+            echo "|---|------|------|------|"
           } >> "$ROOT_README"
           
           COUNTER=1
@@ -679,14 +687,16 @@ jobs:
             if [ -n "$FOLDER" ]; then
               FOLDER_ENCODED=$(urlencode "${FOLDER}")
               SIZE="Unknown"
+              DATE=$(date '+%Y-%m-%d')
+              
               if [ -f "downloads/$FOLDER/README.md" ]; then
                 SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
               fi
-              REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} |" >> "$ROOT_README"
+              
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> "$ROOT_README"
               COUNTER=$((COUNTER + 1))
             fi
           done
@@ -701,35 +711,11 @@ jobs:
       - name: Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-
-          # Count files to push
-          BACKUP_FILE_COUNT=$(find "$BACKUP_DIR" -type f 2>/dev/null | wc -l)
-          DOWNLOADS_FILE_COUNT=$(find downloads -type f 2>/dev/null | wc -l)
           
-          echo "Backup files: $BACKUP_FILE_COUNT"
-          echo "Downloads files: $DOWNLOADS_FILE_COUNT"
-
-          if [ "$BACKUP_FILE_COUNT" -eq 0 ] && [ "$DOWNLOADS_FILE_COUNT" -eq 0 ]; then
-            echo "Nothing to push"
-            exit 0
-          fi
-
-          # Sync with remote
-          git fetch origin "$BRANCH" 2>/dev/null || true
-          git reset --hard origin/"$BRANCH" 2>/dev/null || true
-
-          # Ensure downloads directory exists and copy files
-          mkdir -p downloads
-          if [ -d "$BACKUP_DIR" ]; then
-            cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-          fi
-
-          # Add all files
+          # Check if there are changes to commit
           git add -f downloads/
           git add README.md
-
-          # Commit if there are changes
+          
           if ! git diff --cached --quiet; then
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
             git commit -m "Download multiple Telegram posts - $TIMESTAMP [skip ci]"
@@ -744,23 +730,15 @@ jobs:
                 echo "Push failed, retry $i/5..."
                 if [ $i -lt 5 ]; then
                   sleep 10
-                  git fetch origin "$BRANCH" 2>/dev/null || true
-                  git reset --hard origin/"$BRANCH" 2>/dev/null || true
-                  mkdir -p downloads
-                  cp -r "$BACKUP_DIR"/* downloads/ 2>/dev/null || true
-                  git add -f downloads/
-                  git add README.md
-                  if ! git diff --cached --quiet; then
-                    git commit -m "Download multiple Telegram posts - $TIMESTAMP [skip ci]"
-                  fi
+                  git pull --rebase origin "$BRANCH" 2>/dev/null || true
                 fi
               fi
             done
           else
             echo "No changes to commit"
           fi
-
+          
           echo ""
           echo "=========================================="
-          echo "✅ All files pushed successfully!"
+          echo "✅ Process completed successfully!"
           echo "=========================================="
