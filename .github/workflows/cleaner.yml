@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clean_mode:
-        description: '🧹 حالت پاکسازی'
+        description: 'حالت پاکسازی'
         required: false
         default: 'all'
         type: choice
@@ -15,7 +15,7 @@ on:
           - keep_last_5
           - keep_last_10
       confirm:
-        description: '✅ برای تایید حذف "YES" را وارد کنید'
+        description: 'برای تایید حذف YES را وارد کنید'
         required: true
         type: string
         default: 'NO'
@@ -29,10 +29,10 @@ jobs:
       - name: Check confirmation
         run: |
           if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
-            echo "❌ Operation cancelled. Please enter 'YES' to confirm deletion."
+            echo "Operation cancelled. Please enter YES to confirm deletion."
             exit 1
           fi
-          echo "✅ Confirmation received. Starting cleanup..."
+          echo "Confirmation received. Starting cleanup..."
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -40,151 +40,75 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Set clean mode
-        id: mode
+      - name: Cleanup all
+        if: github.event.inputs.clean_mode == 'all'
         run: |
-          echo "mode=${{ github.event.inputs.clean_mode }}" >> $GITHUB_OUTPUT
-
-      - name: Cleanup Mode: all
-        if: steps.mode.outputs.mode == 'all'
-        run: |
-          echo "🧹 Cleaning ALL downloads and temporary files..."
           rm -rf downloads
           rm -rf /tmp/telegram_downloads
-          rm -f /tmp/all_post_dirs.txt
-          rm -f /tmp/backup_dir_path.txt
           rm -f *.zip
           rm -f *.z[0-9]*
-          echo "# 📥 Telegram Downloader" > README.md
-          echo "" >> README.md
-          echo "دانلود خودکار پست‌های تلگرام" >> README.md
+          echo "# Telegram Downloader" > README.md
           echo "" >> README.md
           echo "---" >> README.md
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          echo "✅ Cleanup completed"
+          echo "Created by avasam.ir" >> README.md
 
-      - name: Cleanup Mode: downloads_only
-        if: steps.mode.outputs.mode == 'downloads_only'
+      - name: Cleanup downloads only
+        if: github.event.inputs.clean_mode == 'downloads_only'
         run: |
-          echo "🧹 Cleaning downloads folder only..."
           rm -rf downloads
-          echo "# 📥 Telegram Downloader" > README.md
-          echo "" >> README.md
-          echo "دانلود خودکار پست‌های تلگرام" >> README.md
+          echo "# Telegram Downloader" > README.md
           echo "" >> README.md
           echo "---" >> README.md
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          echo "✅ Cleanup completed"
+          echo "Created by avasam.ir" >> README.md
 
-      - name: Cleanup Mode: temp_files_only
-        if: steps.mode.outputs.mode == 'temp_files_only'
+      - name: Cleanup temp files only
+        if: github.event.inputs.clean_mode == 'temp_files_only'
         run: |
-          echo "🧹 Cleaning temporary files only..."
           rm -rf /tmp/telegram_downloads
-          rm -f /tmp/all_post_dirs.txt
-          rm -f /tmp/backup_dir_path.txt
           rm -f *.zip
           rm -f *.z[0-9]*
-          echo "✅ Cleanup completed"
 
-      - name: Cleanup Mode: keep_last_5
-        if: steps.mode.outputs.mode == 'keep_last_5'
+      - name: Keep last 5
+        if: github.event.inputs.clean_mode == 'keep_last_5'
         run: |
-          echo "🧹 Keeping only last 5 downloads..."
           if [ -d "downloads" ]; then
             cd downloads
-            TOTAL=$(ls -1 | wc -l)
-            echo "Total folders: $TOTAL"
-            if [ $TOTAL -gt 5 ]; then
-              TO_DELETE=$((TOTAL - 5))
-              ls -1t | tail -$TO_DELETE | while read folder; do
-                echo "  🗑️ Removing: $folder"
-                rm -rf "$folder"
-              done
-              echo "✅ Removed $TO_DELETE old folders"
-            else
-              echo "Total folders ($TOTAL) is 5 or less, nothing to delete"
-            fi
+            ls -1t | tail -n +6 | xargs -r rm -rf
             cd ..
-          else
-            echo "downloads folder not found"
           fi
 
-      - name: Cleanup Mode: keep_last_10
-        if: steps.mode.outputs.mode == 'keep_last_10'
+      - name: Keep last 10
+        if: github.event.inputs.clean_mode == 'keep_last_10'
         run: |
-          echo "🧹 Keeping only last 10 downloads..."
           if [ -d "downloads" ]; then
             cd downloads
-            TOTAL=$(ls -1 | wc -l)
-            echo "Total folders: $TOTAL"
-            if [ $TOTAL -gt 10 ]; then
-              TO_DELETE=$((TOTAL - 10))
-              ls -1t | tail -$TO_DELETE | while read folder; do
-                echo "  🗑️ Removing: $folder"
-                rm -rf "$folder"
-              done
-              echo "✅ Removed $TO_DELETE old folders"
-            else
-              echo "Total folders ($TOTAL) is 10 or less, nothing to delete"
-            fi
+            ls -1t | tail -n +11 | xargs -r rm -rf
             cd ..
-          else
-            echo "downloads folder not found"
           fi
 
-      - name: Update README after cleanup
+      - name: Update README
         run: |
-          echo "# 📥 Telegram Downloader" > README.md
-          echo "" >> README.md
-          echo "دانلود خودکار پست‌های تلگرام" >> README.md
-          echo "" >> README.md
-          if [ -d "downloads" ]; then
-            echo "## 📁 Downloads" >> README.md
+          if [ -d "downloads" ] && [ "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "# Telegram Downloader" > README.md
             echo "" >> README.md
-            COUNTER=1
-            for DIR in downloads/*; do
-              if [ -d "$DIR" ]; then
-                FOLDER_NAME=$(basename "$DIR")
-                SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
-                echo "${COUNTER}. [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) - ${SIZE}" >> README.md
-                COUNTER=$((COUNTER + 1))
+            echo "## Downloads" >> README.md
+            echo "" >> README.md
+            for dir in downloads/*; do
+              if [ -d "$dir" ]; then
+                name=$(basename "$dir")
+                size=$(du -sh "$dir" | cut -f1)
+                echo "- [$name](./downloads/$name/) - $size" >> README.md
               fi
             done
-          fi
-          echo "" >> README.md
-          echo "---" >> README.md
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          echo "✅ README.md updated"
-
-      - name: Show disk space after cleanup
-        run: |
-          echo ""
-          echo "📊 Disk space after cleanup:"
-          df -h /
-          echo ""
-          echo "📁 Remaining folders in downloads:"
-          if [ -d "downloads" ]; then
-            ls -la downloads/
-          else
-            echo "downloads folder does not exist"
+            echo "" >> README.md
+            echo "---" >> README.md
+            echo "Created by avasam.ir" >> README.md
           fi
 
-      - name: Commit and push changes
+      - name: Commit and push
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          if ! git diff --cached --quiet; then
-            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            MODE="${{ github.event.inputs.clean_mode }}"
-            git commit -m "🧹 Cleanup: $MODE - $TIMESTAMP [skip ci]"
-            git push origin HEAD:"${GITHUB_REF_NAME}"
-            echo "✅ Push successful!"
-          else
-            echo "No changes to commit"
-          fi
-          echo ""
-          echo "=========================================="
-          echo "✅ Cleanup completed successfully!"
-          echo "=========================================="
+          git diff --cached --quiet || git commit -m "Cleanup repository [skip ci]"
+          git push origin HEAD:"${GITHUB_REF_NAME}" || true
