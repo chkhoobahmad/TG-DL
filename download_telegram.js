@@ -72,15 +72,22 @@ async function downloadMediaFile(client, media, outputPath, fileName) {
   });
 }
 
-async function getFileNameFromMedia(media) {
-  if (media.document && media.document.attributes) {
-    for (const attr of media.document.attributes) {
-      if (attr.className === 'DocumentAttributeFilename') {
-        return sanitizeFilename(attr.fileName);
-      }
-    }
+async function getFileExtension(filePath) {
+  try {
+    const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
+    const extMap = {
+      'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
+      'video/quicktime': '.mov', 'video/x-msvideo': '.avi',
+      'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
+      'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+      'image/webp': '.webp',
+      'application/pdf': '.pdf', 'application/zip': '.zip',
+      'application/x-rar': '.rar'
+    };
+    return extMap[fileType] || '';
+  } catch {
+    return '';
   }
-  return null;
 }
 
 async function downloadPost(client, postUrl) {
@@ -97,6 +104,7 @@ async function downloadPost(client, postUrl) {
     chat = await client.getEntity(chatId);
   }
   
+  // گرفتن نام کانال
   let channelName = "unknown_channel";
   if (chat.username) {
     channelName = chat.username;
@@ -114,59 +122,40 @@ async function downloadPost(client, postUrl) {
   }
   
   console.log(`✅ Channel: ${channelName}`);
-  console.log(`✅ Message ID: ${msgId}`);
+  console.log(`✅ Post ID: ${msgId}`);
   
-  const postDir = `/tmp/telegram_downloads/${channelName}/${msgId}`;
+  // ساخت نام فایل بر اساس کانال و شماره پست
+  const baseFileName = `${channelName}_${msgId}`;
+  
+  // پوشه موقت برای دانلود
+  const postDir = `/tmp/telegram_downloads/${baseFileName}`;
   fs.mkdirSync(postDir, { recursive: true });
   
   const downloadedFiles = [];
   
+  // ذخیره متن پست (اختیاری)
   if (message.text && message.text.length > 0) {
-    const textFile = path.join(postDir, 'message_text.txt');
+    const textFile = path.join(postDir, `${baseFileName}_message.txt`);
     fs.writeFileSync(textFile, message.text);
     downloadedFiles.push(textFile);
     console.log(`📝 Saved text (${message.text.length} chars)`);
   }
   
+  // دانلود مدیا
   if (message.media) {
     console.log(`📥 Downloading media...`);
-    
-    let fileName = await getFileNameFromMedia(message.media);
-    
-    if (!fileName) {
-      const mediaType = message.media.className;
-      if (mediaType === 'MessageMediaPhoto') {
-        fileName = `photo_${Date.now()}.jpg`;
-      } else if (mediaType === 'MessageMediaDocument') {
-        fileName = `document_${Date.now()}`;
-      } else {
-        fileName = `media_${Date.now()}`;
-      }
-    }
     
     const tempPath = path.join(postDir, 'temp_download');
     
     try {
-      await downloadMediaFile(client, message.media, tempPath, fileName);
+      await downloadMediaFile(client, message.media, tempPath, baseFileName);
       
       if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
-        const fileType = execSync(`file --mime-type -b "${tempPath}"`).toString().trim();
-        const extMap = {
-          'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
-          'video/quicktime': '.mov', 'video/x-msvideo': '.avi',
-          'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
-          'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
-          'image/webp': '.webp',
-          'application/pdf': '.pdf', 'application/zip': '.zip',
-          'application/x-rar': '.rar'
-        };
-        const ext = extMap[fileType] || '';
+        // تشخیص پسوند فایل
+        const ext = await getFileExtension(tempPath);
         
-        let finalFileName = fileName;
-        if (!fileName.includes('.') && ext) {
-          finalFileName = fileName + ext;
-        }
-        
+        // نام نهایی فایل: channelName_postId.ext
+        const finalFileName = ext ? `${baseFileName}${ext}` : baseFileName;
         const finalPath = path.join(postDir, finalFileName);
         fs.renameSync(tempPath, finalPath);
         downloadedFiles.push(finalPath);
@@ -177,20 +166,28 @@ async function downloadPost(client, postUrl) {
     }
   } else {
     console.log(`⚠️ No media in this post`);
+    // اگر مدیا وجود نداشت، یک فایل متنی با پیغام ایجاد کن
+    const infoFile = path.join(postDir, `${baseFileName}_no_media.txt`);
+    fs.writeFileSync(infoFile, `No media found in post ${msgId}\nURL: ${postUrl}`);
+    downloadedFiles.push(infoFile);
   }
   
+  // ذخیره اطلاعات پست
   const totalSize = downloadedFiles.reduce((sum, f) => {
     try { return sum + fs.statSync(f).size; } catch { return sum; }
   }, 0);
   
-  const infoFile = path.join(postDir, 'post_info.json');
+  const infoFile = path.join(postDir, `${baseFileName}_info.json`);
   fs.writeFileSync(infoFile, JSON.stringify({
     url: postUrl,
     channel: channelName,
     postId: msgId,
+    fileName: baseFileName,
     date: message.date,
     files: downloadedFiles.map(f => path.basename(f)),
-    totalSizeMB: (totalSize / 1024 / 1024).toFixed(2)
+    totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
+    hasMedia: !!message.media,
+    hasText: !!(message.text && message.text.length > 0)
   }, null, 2));
   
   console.log(`📊 Summary: ${downloadedFiles.length} file(s), ${(totalSize/1024/1024).toFixed(2)}MB`);
@@ -205,7 +202,7 @@ async function main() {
   
   try {
     console.log('🚀 Connecting to Telegram API...');
-    console.log(`📌 Total URLs to download: ${postUrls.length}`);
+    console.log(`📌 Total posts to download: ${postUrls.length}`);
     console.log(`📌 URLs: ${postUrls.join(', ')}\n`);
     
     const session = new StringSession(stringSession);
@@ -230,10 +227,6 @@ async function main() {
     }
     
     // ذخیره همه مسیرهای دانلود شده
-    const outputFile = process.env.OUTPUT_FILE || '/tmp/downloaded_post_dir.txt';
-    fs.writeFileSync(outputFile, downloadedDirs.join('\n'));
-    
-    // همچنین در فایل all_post_dirs.txt ذخیره کن
     fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n'));
     
     console.log(`\n${'='.repeat(50)}`);
