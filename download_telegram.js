@@ -8,9 +8,8 @@ const apiId = parseInt(process.env.API_ID);
 const apiHash = process.env.API_HASH;
 const stringSession = process.env.STRING_SESSION;
 
-// دریافت لینک‌ها - می‌تواند با فاصله یا خط جدید جدا شده باشد
+// دریافت لینک‌ها
 const postUrlsInput = process.env.POST_URLS || process.env.POST_URL || "";
-// Split بر اساس فاصله و خط جدید
 const postUrls = postUrlsInput.split(/\s+/).filter(url => url.trim() && url.startsWith('http'));
 
 function sanitizeFilename(filename) {
@@ -104,7 +103,6 @@ async function downloadPost(client, postUrl) {
     chat = await client.getEntity(chatId);
   }
   
-  // گرفتن نام کانال
   let channelName = "unknown_channel";
   if (chat.username) {
     channelName = chat.username;
@@ -124,16 +122,12 @@ async function downloadPost(client, postUrl) {
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Post ID: ${msgId}`);
   
-  // ساخت نام فایل بر اساس کانال و شماره پست
   const baseFileName = `${channelName}_${msgId}`;
-  
-  // پوشه موقت برای دانلود
   const postDir = `/tmp/telegram_downloads/${baseFileName}`;
   fs.mkdirSync(postDir, { recursive: true });
   
   const downloadedFiles = [];
   
-  // ذخیره متن پست (اختیاری)
   if (message.text && message.text.length > 0) {
     const textFile = path.join(postDir, `${baseFileName}_message.txt`);
     fs.writeFileSync(textFile, message.text);
@@ -141,7 +135,6 @@ async function downloadPost(client, postUrl) {
     console.log(`📝 Saved text (${message.text.length} chars)`);
   }
   
-  // دانلود مدیا
   if (message.media) {
     console.log(`📥 Downloading media...`);
     
@@ -151,10 +144,7 @@ async function downloadPost(client, postUrl) {
       await downloadMediaFile(client, message.media, tempPath, baseFileName);
       
       if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
-        // تشخیص پسوند فایل
         const ext = await getFileExtension(tempPath);
-        
-        // نام نهایی فایل: channelName_postId.ext
         const finalFileName = ext ? `${baseFileName}${ext}` : baseFileName;
         const finalPath = path.join(postDir, finalFileName);
         fs.renameSync(tempPath, finalPath);
@@ -166,13 +156,11 @@ async function downloadPost(client, postUrl) {
     }
   } else {
     console.log(`⚠️ No media in this post`);
-    // اگر مدیا وجود نداشت، یک فایل متنی با پیغام ایجاد کن
     const infoFile = path.join(postDir, `${baseFileName}_no_media.txt`);
     fs.writeFileSync(infoFile, `No media found in post ${msgId}\nURL: ${postUrl}`);
     downloadedFiles.push(infoFile);
   }
   
-  // ذخیره اطلاعات پست
   const totalSize = downloadedFiles.reduce((sum, f) => {
     try { return sum + fs.statSync(f).size; } catch { return sum; }
   }, 0);
@@ -219,14 +207,12 @@ async function main() {
     
     console.log('✅ Connected!\n');
     
-    // دانلود همه لینک‌ها
     for (let i = 0; i < postUrls.length; i++) {
       console.log(`\n📥 [${i+1}/${postUrls.length}] Downloading...`);
       const postDir = await downloadPost(client, postUrls[i]);
       downloadedDirs.push(postDir);
     }
     
-    // ذخیره همه مسیرهای دانلود شده
     fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n'));
     
     console.log(`\n${'='.repeat(50)}`);
