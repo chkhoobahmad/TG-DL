@@ -28,6 +28,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: write
+
     steps:
       - name: 🧹 Extreme disk space cleanup
         run: |
@@ -124,6 +125,7 @@ jobs:
 
           if [ $? -eq 0 ] && [ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]; then
             echo "✅ All downloads completed!"
+            echo "Contents of all_post_dirs.txt:"
             cat /tmp/all_post_dirs.txt
           else
             echo "❌ Download failed!"
@@ -142,39 +144,45 @@ jobs:
           cat /tmp/all_post_dirs.txt
           echo "==========================================="
 
-          # Copy files from Telegram downloads
           while IFS= read -r POST_DIR; do
             POST_DIR=$(echo "$POST_DIR" | xargs)
-            if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
+            if [ -z "$POST_DIR" ]; then
+              continue
+            fi
+
+            if [ ! -d "$POST_DIR" ]; then
               echo "⚠️ Directory not found: $POST_DIR"
               continue
             fi
 
             echo "Processing directory: $POST_DIR"
+            ls -la "$POST_DIR/"
+
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ]; then
                 FILENAME=$(basename "$FILE")
-                # Skip metadata files
-                if [[ "$FILENAME" != *".json" ]] && [[ "$FILENAME" != *"info"* ]] && [[ "$FILENAME" != *"message"* ]] && [[ "$FILENAME" != *"no_media"* ]]; then
+                if [[ "$FILENAME" != "post_info.json" ]] && [[ "$FILENAME" != "message_text.txt" ]] && [[ "$FILENAME" != "no_media.txt" ]]; then
                   if [ -s "$FILE" ]; then
                     cp "$FILE" "tmp_downloads/$FILENAME"
-                    echo "  ✅ Copied: $FILENAME"
+                    echo "  ✅ Copied: $FILENAME ($(du -h "$FILE" | cut -f1))"
                   fi
+                else
+                  echo "  ⏭️ Skipped metadata: $FILENAME"
                 fi
               fi
             done
           done < /tmp/all_post_dirs.txt
 
-          # Check if we have files to process
           if [ ! -d "tmp_downloads" ] || [ -z "$(ls -A tmp_downloads 2>/dev/null)" ]; then
             echo "❌ No files were copied to tmp_downloads!"
+            ls -la tmp_downloads/ 2>/dev/null || echo "tmp_downloads is empty"
             exit 1
           fi
 
+          echo ""
           echo "=== Files to process ==="
           ls -la tmp_downloads/
 
-          # Process each file
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
 
@@ -189,7 +197,6 @@ jobs:
             echo "Processing: $BASENAME ($(( SIZE / 1024 / 1024 ))MB)"
 
             if [ "$SIZE" -gt $(( SPLIT_THRESHOLD_MB * 1024 * 1024 )) ]; then
-              # Split into parts
               cd "$TARGET_DIR"
               zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
               cd - > /dev/null
@@ -202,35 +209,34 @@ jobs:
               done
               TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
 
-              cat > "$TARGET_DIR/README.md" <<-EOF
-                # 📥 ${FOLDER_NAME}
-
-                **Size:** ${TOTAL_SIZE_MB} MB
-                **Parts:** ${PARTS_COUNT}
-
-                ## Download
-                Download all parts (.z01, .z02, ..., .zip) and extract the .zip file.
-
-                *Created by [avasam.ir](https://avasam.ir)*
+              cat > "$TARGET_DIR/README.md" << EOF
+              # 📥 ${FOLDER_NAME}
+              
+              **Size:** ${TOTAL_SIZE_MB} MB
+              **Parts:** ${PARTS_COUNT}
+              
+              ## Download
+              Download all parts (.z01, .z02, ..., .zip) and extract the .zip file.
+              
+              *Created by [avasam.ir](https://avasam.ir)*
               EOF
               echo "  ✅ Created ${PARTS_COUNT} parts (${TOTAL_SIZE_MB}MB)"
             else
-              # Single zip
               cd "$TARGET_DIR"
               zip "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
               cd - > /dev/null
               rm -f "$FILE"
 
               SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-              cat > "$TARGET_DIR/README.md" <<-EOF
-                # 📥 ${FOLDER_NAME}
-
-                **Size:** ${SIZE_MB} MB
-
-                ## Download
-                Download ${FOLDER_NAME}.zip and extract.
-
-                *Created by [avasam.ir](https://avasam.ir)*
+              cat > "$TARGET_DIR/README.md" << EOF
+              # 📥 ${FOLDER_NAME}
+              
+              **Size:** ${SIZE_MB} MB
+              
+              ## Download
+              Download ${FOLDER_NAME}.zip and extract.
+              
+              *Created by [avasam.ir](https://avasam.ir)*
               EOF
               echo "  ✅ Created zip (${SIZE_MB}MB)"
             fi
@@ -266,28 +272,27 @@ jobs:
             ls -la "$DIR"
           done
 
-          # Create root README
-          cat > README.md <<-EOF
-            # 📥 Telegram Downloader
-
-            دانلود خودکار پست‌های تلگرام
-
-            ## 📁 Downloads
-
+          cat > README.md << 'EOF'
+          # 📥 Telegram Downloader
+          
+          دانلود خودکار پست‌های تلگرام
+          
+          ## 📁 Downloads
+          
           EOF
-
-          for FOLDER in downloads/*/; do
-            if [ -d "$FOLDER" ]; then
-              FOLDER_NAME=$(basename "$FOLDER")
-              SIZE=$(du -sh "$FOLDER" 2>/dev/null | cut -f1)
-              echo "- **${FOLDER_NAME}** (${SIZE}) - [View](./downloads/${FOLDER_NAME}/)" >> README.md
-            fi
-          done
-
-          cat >> README.md <<-EOF
-
-            ---
-            *Created by [avasam.ir](https://avasam.ir)*
+          
+                    for FOLDER in downloads/*/; do
+                      if [ -d "$FOLDER" ]; then
+                        FOLDER_NAME=$(basename "$FOLDER")
+                        SIZE=$(du -sh "$FOLDER" 2>/dev/null | cut -f1)
+                        echo "- **${FOLDER_NAME}** (${SIZE}) - [View](./downloads/${FOLDER_NAME}/)" >> README.md
+                      fi
+                    done
+          
+                    cat >> README.md << 'EOF'
+          
+          ---
+          *Created by [avasam.ir](https://avasam.ir)*
           EOF
 
           echo "✅ README files created"
@@ -308,7 +313,7 @@ jobs:
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
             git commit -m "Download Telegram posts (split 45MB) - $TIMESTAMP [skip ci]"
 
-            for i in {1..5}; do
+            for i in 1 2 3 4 5; do
               echo "Push attempt $i/5..."
               if git push origin HEAD:"$BRANCH" 2>&1; then
                 echo "✅ Push successful!"
