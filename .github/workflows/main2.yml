@@ -4,10 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       post_urls:
-        description: '🔗 لینک‌های پست تلگرام (با فاصله جدا کنید)'
+        description: '🔗 لینک‌های پست تلگرام (هر لینک در یک خط)'
         required: true
         type: string
-        placeholder: 'https://t.me/username/123 https://t.me/username/456'
+        placeholder: |
+          https://t.me/username/123
+          https://t.me/username/456
+          https://t.me/username/789
 
 jobs:
   download-from-telegram:
@@ -15,45 +18,27 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: write
+    
     steps:
-      - name: 🧹 Extreme disk space cleanup
+      - name: 🧹 Cleanup disk space
         run: |
-          echo "Freeing up massive disk space..."
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /opt/hostedtoolcache/CodeQL
-          sudo rm -rf /usr/share/swift
-          sudo rm -rf /usr/local/.ghcup
-          sudo rm -rf /opt/az
-          sudo rm -rf /opt/microsoft
-          sudo rm -rf /opt/pipx
-          sudo rm -rf /usr/lib/jvm
-          sudo rm -rf /usr/local/go
-          sudo rm -rf /usr/share/gradle
-          sudo rm -rf /usr/share/maven
-          sudo rm -rf /usr/local/share/chromium
-          sudo rm -rf /usr/local/share/gecko_driver
-          sudo docker system prune -a -f --volumes 2>/dev/null || true
+          echo "Freeing up disk space..."
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo rm -rf /opt/az /opt/microsoft /usr/lib/jvm /usr/local/go
+          sudo docker system prune -a -f 2>/dev/null || true
           sudo apt-get clean
-          sudo apt-get autoremove -y
           sudo rm -rf /tmp/*
-          sudo rm -rf /var/tmp/*
-          rm -rf ~/.cache
-          rm -rf ~/.npm
-          rm -rf ~/.cargo
-          rm -rf ~/.rustup
+          rm -rf ~/.cache ~/.npm ~/.cargo
           
-          echo ""
-          echo "📊 Available disk space after cleanup:"
+          echo "📊 Available disk space:"
           df -h /
           
           AVAILABLE_GB=$(df --output=avail / | tail -n 1 | awk '{print int($1/1024/1024)}')
           if [ $AVAILABLE_GB -lt 5 ]; then
-            echo "❌ Only ${AVAILABLE_GB}GB available! Not enough space."
+            echo "❌ Only ${AVAILABLE_GB}GB available!"
             exit 1
           fi
-          echo "✅ ${AVAILABLE_GB}GB available - good to continue!"
+          echo "✅ ${AVAILABLE_GB}GB available"
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,337 +53,79 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install telegram
+          npm install telegram@2.0.7
           sudo apt-get update
           sudo apt-get install -y zip curl bc file python3
 
       - name: Configure Git
         run: |
-          git config --global http.postBuffer 524288000
-          git config --global http.maxRequestBuffer 100M
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
+          git config --global http.postBuffer 524288000
 
-      - name: Download Multiple Posts from Telegram
+      - name: Download posts from Telegram (Loop)
         id: download
         env:
           API_ID: ${{ secrets.TELEGRAM_API_ID }}
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
-          POST_URLS: ${{ github.event.inputs.post_urls }}
         run: |
-          cat > download_telegram.js << 'EOF'
-          const { TelegramClient } = require("telegram");
-          const { StringSession } = require("telegram/sessions");
-          const fs = require("fs");
-          const path = require("path");
-          const { execSync } = require("child_process");
-
-          const apiId = parseInt(process.env.API_ID);
-          const apiHash = process.env.API_HASH;
-          const stringSession = process.env.STRING_SESSION;
-          const postUrls = process.env.POST_URLS.split(/\s+/).filter(url => url.trim());
-
-          function sanitizeFilename(filename) {
-            return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
-          }
-
-          async function extractChatAndMsgId(url) {
-            const patterns = [
-              /https?:\/\/t\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
-              /https?:\/\/telegram\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
-            ];
-            
-            let match = null;
-            for (const pattern of patterns) {
-              match = url.match(pattern);
-              if (match) break;
-            }
-            
-            if (!match) {
-              throw new Error(`Invalid Telegram post URL format: ${url}`);
-            }
-            
-            let chatId = match[1];
-            const msgId = parseInt(match[2]);
-            
-            if (chatId === 'c' || chatId.startsWith('c/')) {
-              chatId = '-100' + chatId.replace('c/', '').replace('c', '');
-            } else if (!isNaN(parseInt(chatId)) && chatId.length > 5) {
-              chatId = '-100' + chatId;
-            }
-            
-            return { chatId, msgId };
-          }
-
-          async function downloadMediaFile(client, media, outputPath, fileName) {
-            return new Promise(async (resolve, reject) => {
-              try {
-                let lastPercent = 0;
-                const filePath = await client.downloadMedia(media, {
-                  outputFile: outputPath,
-                  progressCallback: (downloaded, total) => {
-                    const percent = (downloaded / total * 100);
-                    if (Math.floor(percent / 5) > Math.floor(lastPercent / 5) || percent === 100) {
-                      lastPercent = percent;
-                      const downloadedMB = downloaded / 1024 / 1024;
-                      const totalMB = total / 1024 / 1024;
-                      console.log(`      📊 ${percent.toFixed(1)}% (${downloadedMB.toFixed(2)}MB / ${totalMB.toFixed(2)}MB)`);
-                    }
-                  }
-                });
-                
-                if (filePath && fs.existsSync(filePath)) {
-                  const stats = fs.statSync(filePath);
-                  if (stats.size > 0) {
-                    console.log(`   ✅ Downloaded: ${fileName} (${(stats.size/1024/1024).toFixed(2)}MB)`);
-                    resolve(filePath);
-                  } else {
-                    reject(new Error("File is empty"));
-                  }
-                } else {
-                  reject(new Error("Download failed"));
-                }
-              } catch (err) {
-                reject(err);
-              }
-            });
-          }
-
-          async function getFileNameFromMedia(media) {
-            if (media.document && media.document.attributes) {
-              for (const attr of media.document.attributes) {
-                if (attr.className === 'DocumentAttributeFilename') {
-                  return sanitizeFilename(attr.fileName);
-                }
-              }
-            }
-            return null;
-          }
-
-          async function downloadPost(client, postUrl, index, total) {
-            console.log(`\n${'='.repeat(60)}`);
-            console.log(`📌 Downloading post ${index + 1}/${total}: ${postUrl}`);
-            console.log(`${'='.repeat(60)}`);
-            
-            const { chatId, msgId } = await extractChatAndMsgId(postUrl);
-            
-            let chat;
-            if (chatId.toString().startsWith('-100')) {
-              chat = await client.getEntity(parseInt(chatId));
-            } else {
-              chat = await client.getEntity(chatId);
-            }
-            
-            let channelName = "unknown_channel";
-            if (chat.username) {
-              channelName = chat.username;
-            } else if (chat.title) {
-              channelName = sanitizeFilename(chat.title);
-            } else {
-              channelName = chatId.toString().replace('-100', '');
-            }
-            
-            const messages = await client.getMessages(chat, { ids: msgId });
-            const message = messages[0];
-            
-            if (!message) {
-              throw new Error(`Message ${msgId} not found in ${channelName}`);
-            }
-            
-            console.log(`✅ Message found!`);
-            
-            const baseTempDir = `/tmp/telegram_downloads`;
-            const channelDir = path.join(baseTempDir, channelName);
-            const postDir = path.join(channelDir, String(msgId));
-            fs.mkdirSync(postDir, { recursive: true });
-            
-            console.log(`📁 Channel: ${channelName}`);
-            console.log(`📁 Post ID: ${msgId}`);
-            
-            const downloadedFiles = [];
-            
-            if (message.text && message.text.length > 0) {
-              const textFile = path.join(postDir, 'message_text.txt');
-              fs.writeFileSync(textFile, message.text);
-              downloadedFiles.push(textFile);
-              console.log(`📝 Saved message text (${message.text.length} characters)`);
-            }
-            
-            if (message.media) {
-              console.log(`📥 Downloading media...`);
-              
-              let fileName = await getFileNameFromMedia(message.media);
-              
-              if (!fileName) {
-                const mediaType = message.media.className;
-                if (mediaType === 'MessageMediaPhoto') {
-                  fileName = `photo.jpg`;
-                } else if (mediaType === 'MessageMediaDocument') {
-                  fileName = `document`;
-                } else {
-                  fileName = `media`;
-                }
-              }
-              
-              let outputPath = path.join(postDir, fileName);
-              
-              if (!path.extname(outputPath) || path.extname(outputPath) === '') {
-                const tempPath = path.join(postDir, `temp_download`);
-                try {
-                  await downloadMediaFile(client, message.media, tempPath, fileName);
-                  
-                  if (fs.existsSync(tempPath)) {
-                    const fileType = execSync(`file --mime-type -b "${tempPath}"`).toString().trim();
-                    const extMap = {
-                      'video/mp4': '.mp4', 'video/x-matroska': '.mkv', 'video/webm': '.webm',
-                      'video/quicktime': '.mov', 'video/x-msvideo': '.avi',
-                      'audio/mpeg': '.mp3', 'audio/mp4': '.m4a', 'audio/ogg': '.ogg',
-                      'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
-                      'application/pdf': '.pdf', 'application/zip': '.zip',
-                      'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
-                    };
-                    const ext = extMap[fileType] || '';
-                    const finalPath = outputPath + ext;
-                    fs.renameSync(tempPath, finalPath);
-                    downloadedFiles.push(finalPath);
-                    console.log(`   ✅ Saved as: ${path.basename(finalPath)}`);
-                  }
-                } catch (err) {
-                  console.error(`   ❌ Error downloading: ${err.message}`);
-                }
-              } else {
-                try {
-                  await downloadMediaFile(client, message.media, outputPath, fileName);
-                  downloadedFiles.push(outputPath);
-                } catch (err) {
-                  console.error(`   ❌ Error downloading: ${err.message}`);
-                }
-              }
-            } else {
-              console.log(`⚠️ No media found in this post`);
-            }
-            
-            const infoFile = path.join(postDir, 'post_info.json');
-            const totalSizeMB = downloadedFiles.reduce((sum, f) => {
-              try {
-                return sum + fs.statSync(f).size;
-              } catch {
-                return sum;
-              }
-            }, 0) / 1024 / 1024;
-            
-            fs.writeFileSync(infoFile, JSON.stringify({
-              url: postUrl,
-              channel: channelName,
-              channelId: chatId,
-              postId: msgId,
-              postDate: message.date,
-              totalFiles: downloadedFiles.length,
-              totalSizeMB: totalSizeMB.toFixed(2),
-              hasMedia: !!message.media,
-              hasText: !!(message.text && message.text.length > 0)
-            }, null, 2));
-            
-            if (!downloadedFiles.includes(infoFile)) {
-              downloadedFiles.push(infoFile);
-            }
-            
-            console.log(`\n📊 Post Summary:`);
-            console.log(`   - Total files: ${downloadedFiles.length}`);
-            console.log(`   - Total size: ${totalSizeMB.toFixed(2)}MB`);
-            
-            return {
-              channel: channelName,
-              postId: msgId,
-              postDir: postDir,
-              files: downloadedFiles,
-              size: totalSizeMB,
-              url: postUrl
-            };
-          }
-
-          async function main() {
-            let client = null;
-            const allDownloads = [];
-            
-            try {
-              console.log('🚀 Connecting to Telegram...');
-              console.log(`📌 Total posts to download: ${postUrls.length}`);
-              console.log(`📌 Posts: ${postUrls.join(', ')}\n`);
-              
-              const session = new StringSession(stringSession);
-              client = new TelegramClient(session, apiId, apiHash, {
-                connectionRetries: 5,
-                useWSS: true,
-              });
-              
-              await client.start({
-                phoneNumber: () => Promise.reject(new Error('Use STRING_SESSION')),
-                phoneCode: () => Promise.reject(new Error('Use STRING_SESSION')),
-                password: () => Promise.reject(new Error('Use STRING_SESSION')),
-                onError: (err) => console.error('Connection error:', err),
-              });
-              
-              console.log('✅ Connected successfully!\n');
-              
-              for (let i = 0; i < postUrls.length; i++) {
-                const result = await downloadPost(client, postUrls[i], i, postUrls.length);
-                allDownloads.push(result);
-              }
-              
-              const allDirs = allDownloads.map(d => d.postDir);
-              fs.writeFileSync('/tmp/all_post_dirs.txt', allDirs.join('\n'));
-              
-              console.log(`\n${'='.repeat(60)}`);
-              console.log(`📊 MASTER SUMMARY`);
-              console.log(`${'='.repeat(60)}`);
-              console.log(`✅ Total posts downloaded: ${allDownloads.length}`);
-              console.log(`📁 Total size: ${allDownloads.reduce((sum, p) => sum + p.size, 0).toFixed(2)}MB`);
-              
-            } catch (error) {
-              console.error('❌ Fatal error:', error);
-              process.exit(1);
-            } finally {
-              if (client) {
-                await client.disconnect();
-                console.log('✅ Disconnected');
-              }
-            }
-          }
+          # Create array of URLs
+          mapfile -t POST_URLS <<< "${{ github.event.inputs.post_urls }}"
           
-          main().catch(err => {
-            console.error('Main error:', err);
-            process.exit(1);
-          });
-          EOF
-
-          node download_telegram.js
+          mkdir -p /tmp/telegram_downloads
+          
+          COUNTER=1
+          TOTAL=${#POST_URLS[@]}
+          
+          echo "📌 Total posts to download: ${TOTAL}"
+          
+          for URL in "${POST_URLS[@]}"; do
+            # Skip empty lines
+            if [ -z "$URL" ]; then
+              continue
+            fi
+            
+            echo ""
+            echo "=========================================="
+            echo "📥 Downloading post ${COUNTER}/${TOTAL}: ${URL}"
+            echo "=========================================="
+            
+            export POST_URL="$URL"
+            node download_telegram.js
+            
+            if [ $? -eq 0 ] && [ -f "/tmp/downloaded_post_dir.txt" ]; then
+              cat /tmp/downloaded_post_dir.txt >> /tmp/all_post_dirs.txt
+              echo "" >> /tmp/all_post_dirs.txt
+              echo "✅ Post ${COUNTER} downloaded successfully"
+            else
+              echo "❌ Failed to download post ${COUNTER}"
+            fi
+            
+            COUNTER=$((COUNTER + 1))
+            rm -f /tmp/downloaded_post_dir.txt
+          done
           
           if [ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]; then
-            echo "Download completed successfully"
-            echo "POST_DIRS=$(cat /tmp/all_post_dirs.txt | tr '\n' ' ')" >> $GITHUB_OUTPUT
+            echo "✅ All downloads completed!"
+            cat /tmp/all_post_dirs.txt
           else
-            echo "❌ Download failed!"
+            echo "❌ No posts were downloaded!"
             exit 1
           fi
 
       - name: Create split ZIP archives (45MB parts)
         run: |
-          echo "📁 Creating split ZIP archives (45MB per part)..."
+          echo "📦 Creating split ZIP archives (45MB per part)..."
           
-          # خواندن دایرکتوری‌ها
-          POST_DIRS=""
-          if [ -f "/tmp/all_post_dirs.txt" ]; then
-            POST_DIRS=$(cat /tmp/all_post_dirs.txt)
-          fi
+          # Read directories into array
+          POST_DIRS=()
+          while IFS= read -r line; do
+            [ -n "$line" ] && POST_DIRS+=("$line")
+          done < /tmp/all_post_dirs.txt
           
-          if [ -z "$POST_DIRS" ]; then
-            POST_DIRS=$(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null | tr '\n' ' ')
-          fi
-          
-          if [ -z "$POST_DIRS" ]; then
-            echo "❌ No downloads found!"
+          if [ ${#POST_DIRS[@]} -eq 0 ]; then
+            echo "❌ No download directories found!"
             exit 1
           fi
           
@@ -408,30 +135,27 @@ jobs:
           REPO_NAME="${{ github.event.repository.name }}"
           BRANCH="${GITHUB_REF_NAME}"
           
-          BACKUP_DIR="/tmp/backup_$$"
-          mkdir -p "$BACKUP_DIR"
-          echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
-          
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
-          for POST_DIR in $POST_DIRS; do
-            if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
+          for POST_DIR in "${POST_DIRS[@]}"; do
+            if [ ! -d "$POST_DIR" ]; then
+              echo "⚠️ Directory not found: $POST_DIR"
               continue
             fi
             
             CHANNEL_NAME=$(basename "$(dirname "$POST_DIR")")
             POST_ID=$(basename "$POST_DIR")
             FOLDER_NAME="${CHANNEL_NAME}_${POST_ID}"
-            TARGET_DIR="$BACKUP_DIR/${FOLDER_NAME}"
+            TARGET_DIR="downloads/${FOLDER_NAME}"
             
             mkdir -p "$TARGET_DIR"
             
             echo ""
-            echo "📦 Creating split archive for: $CHANNEL_NAME/$POST_ID"
+            echo "📁 Processing: $CHANNEL_NAME / $POST_ID"
             
-            # کپی فایل‌ها
+            # Copy files
             FILE_COUNT=0
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
@@ -448,15 +172,18 @@ jobs:
               continue
             fi
             
-            # ایجاد زیپ چند قسمتی
+            # Create split zip
             cd "$TARGET_DIR"
             
-            echo "   📀 Creating split ZIP (${SPLIT_SIZE} parts)..."
+            echo "   📀 Creating split ZIP..."
             zip -r -s ${SPLIT_SIZE} "${FOLDER_NAME}.zip" ./* > /dev/null 2>&1
+            
+            # Remove original files, keep only zip parts
+            rm -f message_text.txt post_info.json 2>/dev/null || true
             
             cd - > /dev/null
             
-            # شمارش قسمت‌ها
+            # Count parts
             PART_COUNT=$(ls -1 "$TARGET_DIR"/*.z* "$TARGET_DIR"/*.zip 2>/dev/null | wc -l)
             
             if [ $PART_COUNT -eq 0 ]; then
@@ -464,7 +191,7 @@ jobs:
               continue
             fi
             
-            # محاسبه حجم کل
+            # Calculate total size
             TOTAL_SIZE=0
             for PART in "$TARGET_DIR"/*; do
               [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
@@ -477,28 +204,9 @@ jobs:
           echo ""
           echo "✅ All split archives created!"
 
-      - name: Copy to downloads folder and update README
+      - name: Generate README files
         run: |
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          
-          echo "📁 Backup directory: $BACKUP_DIR"
-          
-          # کپی فایل‌ها به پوشه downloads
-          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            cp -r "$BACKUP_DIR"/* downloads/
-            echo "✅ Copied archives to downloads folder"
-          else
-            echo "❌ Backup directory is empty!"
-            exit 1
-          fi
-          
-          # دریافت لیست پوشه‌ها
-          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-          
-          if [ -z "$FOLDERS" ]; then
-            echo "❌ No folders found in downloads!"
-            exit 1
-          fi
+          echo "📝 Generating README files..."
           
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
@@ -506,41 +214,36 @@ jobs:
           
           REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
           
-          # ایجاد downloads/README.md
+          # Create downloads/README.md
           cat > downloads/README.md << 'EOF'
-          # 📥 Downloads from Telegram
+          # 📥 Telegram Downloads
           
-          This folder contains downloaded posts from Telegram channels.
-          
-          Each post is split into **45MB ZIP parts** for easy downloading.
+          Posts downloaded from Telegram, split into **45MB ZIP parts**.
           
           ---
           
           ## 📁 Available Downloads
           
-          | # | Post | Parts | Size | Date |
-          |---|------|-------|------|------|
+          | # | Post | Parts | Size |
+          |---|------|-------|------|
           EOF
           
           COUNTER=1
-          for FOLDER in $FOLDERS; do
+          for FOLDER in $(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort); do
             if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              FOLDER_ENCODED=$(urlencode "$FOLDER")
               PARTS=$(ls -1 downloads/${FOLDER}/*.z* downloads/${FOLDER}/*.zip 2>/dev/null | wc -l)
               SIZE=$(du -sh "downloads/${FOLDER}" 2>/dev/null | cut -f1)
-              DATE=$(date '+%Y-%m-%d')
               
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} parts | ${SIZE} | ${DATE} |" >> downloads/README.md
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} parts | ${SIZE} |" >> downloads/README.md
               COUNTER=$((COUNTER + 1))
               
-              # ایجاد README برای هر پست
+              # Create README for each post
               cat > "downloads/${FOLDER}/README.md" << EOF
-# 📥 Telegram Post
+# 📥 ${FOLDER}
 
-**Channel:** \`${FOLDER%%_*}\`  
-**Post ID:** \`${FOLDER##*_}\`  
-**Total Parts:** ${PARTS}  
-**Total Size:** ${SIZE}  
+**Parts:** ${PARTS}  
+**Size:** ${SIZE}  
 **Status:** ✅ Complete
 
 ---
@@ -553,10 +256,9 @@ EOF
               
               for PART in $(ls -1 downloads/${FOLDER}/*.{zip,z[0-9]*} 2>/dev/null | sort); do
                 PART_NAME=$(basename "$PART")
-                PART_SIZE=$(du -h "$PART" | cut -f1)
                 PART_ENCODED=$(urlencode "$PART_NAME")
                 RAW_LINK="https://github.com/${{ github.repository }}/raw/${GITHUB_REF_NAME}/downloads/${FOLDER}/${PART_ENCODED}"
-                echo "| ${PART_NAME##*.} | \`${PART_NAME}\` | [Download](${RAW_LINK}) | ${PART_SIZE} |" >> "downloads/${FOLDER}/README.md"
+                echo "| ${PART_NAME##*.} | \`${PART_NAME}\` | [Download](${RAW_LINK}) |" >> "downloads/${FOLDER}/README.md"
               done
               
               cat >> "downloads/${FOLDER}/README.md" << 'EOF'
@@ -566,11 +268,7 @@ EOF
 ## 📖 How to Extract
 
 1. **Download ALL parts** to the same folder
-2. **Extract** the `.zip` file:
-   - **Windows:** Right-click → Extract All
-   - **Linux/Mac:** `unzip filename.zip`
-
----
+2. **Extract** the `.zip` file
 
 *Created by [avasam.ir](https://avasam.ir)*
 EOF
@@ -585,61 +283,44 @@ EOF
           
           1. Click on any post folder above
           2. **Download ALL parts** (.z01, .z02, ..., .zip)
-          3. Extract the `.zip` file with any archive tool
-          
-          ---
+          3. Extract the `.zip` file
           
           *Created by [avasam.ir](https://avasam.ir)*
           EOF
           
-          echo "✅ README files created"
+          # Update root README
+          cat > README.md << 'EOF'
+          # AVASAM Telegram Downloader
           
-          # به‌روزرسانی root README
-          ROOT_README="README.md"
-          SECTION_TITLE="📥 دانلود‌های تلگرام"
+          دانلود خودکار پست‌های تلگرام و ذخیره در گیت‌هاب
           
-          if [ ! -f "$ROOT_README" ]; then
-            echo "# AVASAM Telegram Downloader" > "$ROOT_README"
-            echo "" >> "$ROOT_README"
-            echo "دانلود خودکار فایل‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
-          fi
+          ---
           
-          # حذف سکشن قدیمی
-          if grep -q "$SECTION_TITLE" "$ROOT_README"; then
-            sed -i "/$SECTION_TITLE/,/^---$/d" "$ROOT_README"
-          fi
+          ## 📥 دانلود‌های تلگرام
           
-          # افزودن سکشن جدید
-          {
-            echo ""
-            echo "---"
-            echo ""
-            echo "## $SECTION_TITLE"
-            echo ""
-            echo "| # | Post | Parts | Size | Date |"
-            echo "|---|------|-------|------|------|"
-          } >> "$ROOT_README"
+          EOF
+          
+          echo "| # | Post | Parts | Size |" >> README.md
+          echo "|---|------|-------|------|" >> README.md
           
           COUNTER=1
-          for FOLDER in $FOLDERS; do
+          for FOLDER in $(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort); do
             if [ -n "$FOLDER" ]; then
-              FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              FOLDER_ENCODED=$(urlencode "$FOLDER")
               PARTS=$(ls -1 downloads/${FOLDER}/*.z* downloads/${FOLDER}/*.zip 2>/dev/null | wc -l)
               SIZE=$(du -sh "downloads/${FOLDER}" 2>/dev/null | cut -f1)
-              DATE=$(date '+%Y-%m-%d')
-              
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} parts | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} | ${SIZE} |" >> README.md
               COUNTER=$((COUNTER + 1))
             fi
           done
           
-          echo "" >> "$ROOT_README"
-          echo "---" >> "$ROOT_README"
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> "$ROOT_README"
+          echo "" >> README.md
+          echo "---" >> README.md
+          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
           
-          echo "✅ Root README.md updated"
+          echo "✅ README files updated"
 
-      - name: Commit & Push
+      - name: Commit and push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
@@ -650,6 +331,7 @@ EOF
           
           git add -f downloads/
           git add README.md
+          git add download_telegram.js
           
           if ! git diff --cached --quiet; then
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
@@ -675,6 +357,4 @@ EOF
           echo ""
           echo "=========================================="
           echo "✅ Process completed successfully!"
-          echo "📁 Files are stored directly in the repository"
-          echo "📦 Each post is split into 45MB ZIP parts"
           echo "=========================================="
