@@ -415,7 +415,8 @@ jobs:
           DOWNLOAD_EXIT=$?
           if [ $DOWNLOAD_EXIT -eq 0 ] || ([ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]); then
             echo "Download completed successfully"
-            echo "POST_DIRS=$(cat /tmp/all_post_dirs.txt)" >> $GITHUB_OUTPUT
+            POST_DIRS=$(cat /tmp/all_post_dirs.txt | tr '\n' ' ')
+            echo "POST_DIRS=${POST_DIRS}" >> $GITHUB_OUTPUT
             exit 0
           else
             exit $DOWNLOAD_EXIT
@@ -425,30 +426,37 @@ jobs:
         run: |
           echo "📁 Creating split ZIP archives (45MB per part)..."
           
-          POST_DIRS=""
+          # Read directories into an array
+          POST_DIRS_ARRAY=()
           if [ -f "/tmp/all_post_dirs.txt" ]; then
-            POST_DIRS=$(cat /tmp/all_post_dirs.txt)
+            while IFS= read -r line; do
+              [ -n "$line" ] && POST_DIRS_ARRAY+=("$line")
+            done < /tmp/all_post_dirs.txt
             echo "Found directories in /tmp/all_post_dirs.txt"
           fi
           
-          if [ -z "$POST_DIRS" ]; then
-            POST_DIRS=$(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
-            echo "Found directories via find: $POST_DIRS"
+          if [ ${#POST_DIRS_ARRAY[@]} -eq 0 ]; then
+            # Try to find directories manually
+            while IFS= read -r line; do
+              [ -n "$line" ] && POST_DIRS_ARRAY+=("$line")
+            done < <(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
+            echo "Found directories via find"
           fi
           
-          if [ -z "$POST_DIRS" ]; then
+          if [ ${#POST_DIRS_ARRAY[@]} -eq 0 ]; then
             echo "❌ No downloads found!"
             exit 1
           fi
           
           mkdir -p downloads
           
-          echo "$POST_DIRS" | while read POST_DIR; do
-            if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
+          for POST_DIR in "${POST_DIRS_ARRAY[@]}"; do
+            if [ ! -d "$POST_DIR" ]; then
+              echo "⚠️ Directory not found: $POST_DIR"
               continue
             fi
             
-            CHANNEL_NAME=$(basename $(dirname "$POST_DIR"))
+            CHANNEL_NAME=$(basename "$(dirname "$POST_DIR")")
             POST_ID=$(basename "$POST_DIR")
             FOLDER_NAME="${CHANNEL_NAME}_${POST_ID}"
             TARGET_DIR="downloads/${FOLDER_NAME}"
@@ -459,8 +467,9 @@ jobs:
             echo "📦 Creating split archive for: $CHANNEL_NAME/$POST_ID"
             echo "   Source: $POST_DIR"
             
-            # Copy all files to temp directory
+            # Create temp directory for this post
             TEMP_DIR="/tmp/split_${FOLDER_NAME}"
+            rm -rf "$TEMP_DIR"
             mkdir -p "$TEMP_DIR"
             
             FILE_COUNT=0
@@ -479,19 +488,29 @@ jobs:
               continue
             fi
             
-            # Create split zip (45MB = 45000000 bytes) or ~43MB for safety
+            # Create split zip (43MB parts to ensure <45MB)
             cd "$TEMP_DIR"
             
-            echo "   📀 Creating split ZIP (45MB parts)..."
+            echo "   📀 Creating split ZIP (43MB parts)..."
             zip -r -s 43m "${FOLDER_NAME}.zip" ./* > /dev/null 2>&1
             
             # Move all split parts to target directory
-            mv ${FOLDER_NAME}.z* "$TARGET_DIR/" 2>/dev/null || mv *.z* "$TARGET_DIR/" 2>/dev/null
+            if ls ${FOLDER_NAME}.z* 2>/dev/null; then
+              mv ${FOLDER_NAME}.z* "$TARGET_DIR/" 2>/dev/null
+            fi
+            if ls *.z* 2>/dev/null && [ ! -f "${FOLDER_NAME}.zip" ]; then
+              mv *.z* "$TARGET_DIR/" 2>/dev/null
+            fi
             
             cd - > /dev/null
             
             # Count parts
             PART_COUNT=$(ls -1 "$TARGET_DIR"/*.z* 2>/dev/null | wc -l)
+            
+            if [ $PART_COUNT -eq 0 ]; then
+              echo "   ❌ Failed to create split archive!"
+              continue
+            fi
             
             # Get total size of all parts
             TOTAL_SIZE=0
