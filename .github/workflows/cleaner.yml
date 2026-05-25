@@ -87,17 +87,17 @@ jobs:
         run: |
           echo "🧹 Keeping only last 5 downloads..."
           if [ -d "downloads" ]; then
-            TOTAL=$(ls -1 downloads/ | wc -l)
+            cd downloads
+            TOTAL=$(ls -1 | wc -l)
             echo "Total folders: $TOTAL"
             if [ $TOTAL -gt 5 ]; then
               TO_DELETE=$((TOTAL - 5))
-              ls -1t downloads/ | tail -$TO_DELETE | while read folder; do
-                echo "  🗑️ Removing: $folder"
-                rm -rf "downloads/$folder"
-              done
+              ls -1t | tail -$TO_DELETE | xargs -I {} rm -rf {}
+              echo "✅ Removed $TO_DELETE old folders"
             else
               echo "Total folders ($TOTAL) is 5 or less, nothing to delete"
             fi
+            cd ..
           else
             echo "downloads folder not found"
           fi
@@ -107,17 +107,17 @@ jobs:
         run: |
           echo "🧹 Keeping only last 10 downloads..."
           if [ -d "downloads" ]; then
-            TOTAL=$(ls -1 downloads/ | wc -l)
+            cd downloads
+            TOTAL=$(ls -1 | wc -l)
             echo "Total folders: $TOTAL"
             if [ $TOTAL -gt 10 ]; then
               TO_DELETE=$((TOTAL - 10))
-              ls -1t downloads/ | tail -$TO_DELETE | while read folder; do
-                echo "  🗑️ Removing: $folder"
-                rm -rf "downloads/$folder"
-              done
+              ls -1t | tail -$TO_DELETE | xargs -I {} rm -rf {}
+              echo "✅ Removed $TO_DELETE old folders"
             else
               echo "Total folders ($TOTAL) is 10 or less, nothing to delete"
             fi
+            cd ..
           else
             echo "downloads folder not found"
           fi
@@ -128,7 +128,7 @@ jobs:
           echo "" >> README.md
           echo "دانلود خودکار پست‌های تلگرام" >> README.md
           echo "" >> README.md
-          if [ -d "downloads" ] && [ "$(ls -A downloads 2>/dev/null)" ]; then
+          if [ -d "downloads" ]; then
             echo "## 📁 Downloads" >> README.md
             echo "" >> README.md
             COUNTER=1
@@ -145,6 +145,19 @@ jobs:
           echo "---" >> README.md
           echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
           echo "✅ README.md updated"
+
+      - name: Show disk space after cleanup
+        run: |
+          echo ""
+          echo "📊 Disk space after cleanup:"
+          df -h /
+          echo ""
+          echo "📁 Remaining folders in downloads:"
+          if [ -d "downloads" ]; then
+            ls -la downloads/
+          else
+            echo "downloads folder does not exist"
+          fi
 
       - name: Commit and push changes
         run: |
