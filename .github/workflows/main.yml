@@ -122,7 +122,6 @@ jobs:
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
         run: |
-          # بررسی وجود فایل download_telegram.js
           if [ ! -f "download_telegram.js" ]; then
             echo "❌ download_telegram.js not found in repository!"
             exit 1
@@ -132,37 +131,19 @@ jobs:
           sudo rm -rf /tmp/telegram_downloads
           mkdir -p /tmp/telegram_downloads
           
-          # پردازش هر لینک
-          echo "${{ github.event.inputs.post_urls }}" | while IFS= read -r URL; do
-            if [ -z "$URL" ]; then
-              continue
-            fi
-            
-            echo ""
-            echo "=========================================="
-            echo "📥 Downloading: $URL"
-            echo "=========================================="
-            
-            export POST_URL="$URL"
-            export OUTPUT_FILE="/tmp/downloaded_post_dir_$$.txt"
-            node download_telegram.js
-            
-            if [ $? -eq 0 ] && [ -f "$OUTPUT_FILE" ]; then
-              cat "$OUTPUT_FILE" >> /tmp/all_post_dirs.txt
-              echo "" >> /tmp/all_post_dirs.txt
-              echo "✅ Download successful"
-            else
-              echo "❌ Download failed for: $URL"
-            fi
-          done
+          # ارسال همه لینک‌ها به صورت یکجا به اسکریپت
+          export POST_URLS="${{ github.event.inputs.post_urls }}"
+          export OUTPUT_FILE="/tmp/downloaded_post_dir.txt"
           
-          if [ ! -f "/tmp/all_post_dirs.txt" ] || [ ! -s "/tmp/all_post_dirs.txt" ]; then
-            echo "❌ No posts were downloaded!"
+          node download_telegram.js
+          
+          if [ $? -eq 0 ] && [ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]; then
+            echo "✅ All downloads completed!"
+            cat /tmp/all_post_dirs.txt
+          else
+            echo "❌ Download failed!"
             exit 1
           fi
-          
-          echo "✅ All downloads completed!"
-          cat /tmp/all_post_dirs.txt
 
       - name: Download and process files
         run: |
