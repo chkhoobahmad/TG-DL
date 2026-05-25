@@ -128,7 +128,6 @@ async function downloadPost(client, postUrl) {
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Post ID: ${msgId}`);
   
-  // پوشه به نام channel_postid
   const folderName = `${channelName}_${msgId}`;
   const postDir = `/tmp/telegram_downloads/${folderName}`;
   fs.mkdirSync(postDir, { recursive: true });
