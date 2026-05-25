@@ -20,26 +20,21 @@ async function extractChatAndMsgId(url) {
     /https?:\/\/t\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
     /https?:\/\/telegram\.me\/(?:c\/)?([^\/]+)\/(\d+)/,
   ];
-
   let match = null;
   for (const pattern of patterns) {
     match = url.match(pattern);
     if (match) break;
   }
-
   if (!match) {
     throw new Error(`Invalid Telegram post URL format: ${url}`);
   }
-
   let chatId = match[1];
   const msgId = parseInt(match[2]);
-
   if (chatId === 'c' || chatId.startsWith('c/')) {
     chatId = '-100' + chatId.replace('c/', '').replace('c', '');
   } else if (!isNaN(parseInt(chatId)) && chatId.length > 5) {
     chatId = '-100' + chatId;
   }
-
   return { chatId, msgId };
 }
 
@@ -57,7 +52,6 @@ async function downloadMediaFile(client, media, outputPath, fileName) {
           }
         }
       });
-
       if (filePath && fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
         console.log(`   ✅ Downloaded: ${fileName} (${(fs.statSync(filePath).size/1024/1024).toFixed(2)}MB)`);
         resolve(filePath);
@@ -103,16 +97,13 @@ async function downloadPost(client, postUrl) {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`📌 Processing: ${postUrl}`);
   console.log(`${'='.repeat(50)}`);
-
   const { chatId, msgId } = await extractChatAndMsgId(postUrl);
-
   let chat;
   if (chatId.toString().startsWith('-100')) {
     chat = await client.getEntity(parseInt(chatId));
   } else {
     chat = await client.getEntity(chatId);
   }
-
   let channelName = "unknown_channel";
   if (chat.username) {
     channelName = chat.username;
@@ -121,42 +112,24 @@ async function downloadPost(client, postUrl) {
   } else {
     channelName = chatId.toString().replace('-100', '');
   }
-
   const messages = await client.getMessages(chat, { ids: msgId });
   const message = messages[0];
-
   if (!message) {
     throw new Error(`Message ${msgId} not found`);
   }
-
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Post ID: ${msgId}`);
-
   const folderName = `${channelName}_${msgId}`;
   const postDir = `/tmp/telegram_downloads/${folderName}`;
   fs.mkdirSync(postDir, { recursive: true });
-
-  const downloadedFiles = [];
-
-  if (message.text && message.text.length > 0) {
-    const textFile = path.join(postDir, 'message_text.txt');
-    fs.writeFileSync(textFile, message.text);
-    downloadedFiles.push(textFile);
-    console.log(`📝 Saved text (${message.text.length} chars)`);
-  }
-
   if (message.media) {
     console.log(`📥 Downloading media...`);
-
     let originalFileName = await getOriginalFileName(message.media);
     const tempPath = path.join(postDir, 'temp_download');
-
     try {
       await downloadMediaFile(client, message.media, tempPath, originalFileName || 'media');
-
       if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
         const ext = await getFileExtension(tempPath);
-
         let finalFileName;
         if (originalFileName) {
           if (!originalFileName.match(/\.[^.]*$/)) {
@@ -167,10 +140,8 @@ async function downloadPost(client, postUrl) {
         } else {
           finalFileName = `${folderName}${ext}`;
         }
-
         const finalPath = path.join(postDir, finalFileName);
         fs.renameSync(tempPath, finalPath);
-        downloadedFiles.push(finalPath);
         console.log(`   ✅ Saved as: ${finalFileName}`);
       }
     } catch (err) {
@@ -178,68 +149,38 @@ async function downloadPost(client, postUrl) {
     }
   } else {
     console.log(`⚠️ No media in this post`);
-    const infoFile = path.join(postDir, 'no_media.txt');
-    fs.writeFileSync(infoFile, `No media found in post ${msgId}\nURL: ${postUrl}`);
-    downloadedFiles.push(infoFile);
   }
-
-  const totalSize = downloadedFiles.reduce((sum, f) => {
-    try { return sum + fs.statSync(f).size; } catch { return sum; }
-  }, 0);
-
-  const infoFile = path.join(postDir, 'post_info.json');
-  fs.writeFileSync(infoFile, JSON.stringify({
-    url: postUrl,
-    channel: channelName,
-    postId: msgId,
-    folderName: folderName,
-    files: downloadedFiles.map(f => path.basename(f)),
-    totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
-    hasMedia: !!message.media,
-    hasText: !!(message.text && message.text.length > 0)
-  }, null, 2));
-
-  console.log(`📊 Summary: ${downloadedFiles.length} file(s), ${(totalSize/1024/1024).toFixed(2)}MB`);
   console.log(`📁 Saved to: ${postDir}`);
-
   return postDir;
 }
 
 async function main() {
   let client = null;
   const downloadedDirs = [];
-
   try {
     console.log('🚀 Connecting to Telegram API...');
     console.log(`📌 Total posts to download: ${postUrls.length}`);
     console.log(`📌 URLs: ${postUrls.join(', ')}\n`);
-
     const session = new StringSession(stringSession);
     client = new TelegramClient(session, apiId, apiHash, {
       connectionRetries: 3,
       useWSS: true,
     });
-
     await client.start({
       phoneNumber: () => { throw new Error('Use STRING_SESSION'); },
       phoneCode: () => { throw new Error('Use STRING_SESSION'); },
       password: () => { throw new Error('Use STRING_SESSION'); },
     });
-
     console.log('✅ Connected!\n');
-
     for (let i = 0; i < postUrls.length; i++) {
       console.log(`\n📥 [${i+1}/${postUrls.length}] Downloading...`);
       const postDir = await downloadPost(client, postUrls[i]);
       downloadedDirs.push(postDir);
     }
-
     fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n') + '\n');
-
     console.log(`\n${'='.repeat(50)}`);
     console.log(`✅ All downloads completed! (${downloadedDirs.length} posts)`);
     console.log(`${'='.repeat(50)}`);
-
   } catch (error) {
     console.error('❌ Error:', error.message);
     process.exit(1);
