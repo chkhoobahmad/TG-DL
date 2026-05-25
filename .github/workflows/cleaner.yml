@@ -40,8 +40,13 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      - name: Set clean mode
+        id: mode
+        run: |
+          echo "mode=${{ github.event.inputs.clean_mode }}" >> $GITHUB_OUTPUT
+
       - name: Cleanup Mode: all
-        if: github.event.inputs.clean_mode == 'all'
+        if: steps.mode.outputs.mode == 'all'
         run: |
           echo "🧹 Cleaning ALL downloads and temporary files..."
           rm -rf downloads
@@ -59,7 +64,7 @@ jobs:
           echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: downloads_only
-        if: github.event.inputs.clean_mode == 'downloads_only'
+        if: steps.mode.outputs.mode == 'downloads_only'
         run: |
           echo "🧹 Cleaning downloads folder only..."
           rm -rf downloads
@@ -72,7 +77,7 @@ jobs:
           echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: temp_files_only
-        if: github.event.inputs.clean_mode == 'temp_files_only'
+        if: steps.mode.outputs.mode == 'temp_files_only'
         run: |
           echo "🧹 Cleaning temporary files only..."
           rm -rf /tmp/telegram_downloads
@@ -83,7 +88,7 @@ jobs:
           echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: keep_last_5
-        if: github.event.inputs.clean_mode == 'keep_last_5'
+        if: steps.mode.outputs.mode == 'keep_last_5'
         run: |
           echo "🧹 Keeping only last 5 downloads..."
           if [ -d "downloads" ]; then
@@ -92,7 +97,10 @@ jobs:
             echo "Total folders: $TOTAL"
             if [ $TOTAL -gt 5 ]; then
               TO_DELETE=$((TOTAL - 5))
-              ls -1t | tail -$TO_DELETE | xargs -I {} rm -rf {}
+              ls -1t | tail -$TO_DELETE | while read folder; do
+                echo "  🗑️ Removing: $folder"
+                rm -rf "$folder"
+              done
               echo "✅ Removed $TO_DELETE old folders"
             else
               echo "Total folders ($TOTAL) is 5 or less, nothing to delete"
@@ -103,7 +111,7 @@ jobs:
           fi
 
       - name: Cleanup Mode: keep_last_10
-        if: github.event.inputs.clean_mode == 'keep_last_10'
+        if: steps.mode.outputs.mode == 'keep_last_10'
         run: |
           echo "🧹 Keeping only last 10 downloads..."
           if [ -d "downloads" ]; then
@@ -112,7 +120,10 @@ jobs:
             echo "Total folders: $TOTAL"
             if [ $TOTAL -gt 10 ]; then
               TO_DELETE=$((TOTAL - 10))
-              ls -1t | tail -$TO_DELETE | xargs -I {} rm -rf {}
+              ls -1t | tail -$TO_DELETE | while read folder; do
+                echo "  🗑️ Removing: $folder"
+                rm -rf "$folder"
+              done
               echo "✅ Removed $TO_DELETE old folders"
             else
               echo "Total folders ($TOTAL) is 10 or less, nothing to delete"
