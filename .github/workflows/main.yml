@@ -141,8 +141,9 @@ jobs:
                 FILENAME=$(basename "$FILE")
                 if [[ "$FILENAME" != "post_info.json" ]] && [[ "$FILENAME" != "message_text.txt" ]] && [[ "$FILENAME" != "no_media.txt" ]]; then
                   if [ -s "$FILE" ]; then
-                    cp "$FILE" "tmp_downloads/$FILENAME"
-                    echo "  ✅ Copied: $FILENAME"
+                    SAFE_NAME=$(echo "$FILENAME" | sed 's/[()]//g')
+                    cp "$FILE" "tmp_downloads/$SAFE_NAME"
+                    echo "  ✅ Copied: $SAFE_NAME"
                   fi
                 fi
               fi
@@ -171,25 +172,48 @@ jobs:
 
             if [ "$SIZE" -gt $(( SPLIT_THRESHOLD_MB * 1024 * 1024 )) ]; then
               cd "$TARGET_DIR"
-              zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
+              zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE"
+              if [ $? -eq 0 ]; then
+                rm -f "$FILE"
+                PARTS_COUNT=$(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | wc -l)
+                TOTAL_SIZE=0
+                for PART in "$TARGET_DIR"/*; do
+                  [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
+                done
+                TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
+                echo "# 📥 ${FOLDER_NAME}" > "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "**Size:** ${TOTAL_SIZE_MB} MB" >> "$TARGET_DIR/README.md"
+                echo "**Parts:** ${PARTS_COUNT}" >> "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "## Download" >> "$TARGET_DIR/README.md"
+                echo "Download all parts (.z01, .z02, ..., .zip) and extract the .zip file." >> "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "*Created by [avasam.ir](https://avasam.ir)*" >> "$TARGET_DIR/README.md"
+                echo "  ✅ Created ${PARTS_COUNT} parts (${TOTAL_SIZE_MB}MB)"
+              else
+                echo "  ❌ Zip failed for $BASENAME"
+              fi
               cd - > /dev/null
-              rm -f "$FILE"
-              PARTS_COUNT=$(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | wc -l)
-              TOTAL_SIZE=0
-              for PART in "$TARGET_DIR"/*; do
-                [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
-              done
-              TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
-              printf '# 📥 %s\n\n**Size:** %s MB\n**Parts:** %s\n\n## Download\nDownload all parts (.z01, .z02, ..., .zip) and extract the .zip file.\n\n*Created by [avasam.ir](https://avasam.ir)*\n' "$FOLDER_NAME" "$TOTAL_SIZE_MB" "$PARTS_COUNT" > "$TARGET_DIR/README.md"
-              echo "  ✅ Created ${PARTS_COUNT} parts (${TOTAL_SIZE_MB}MB)"
             else
               cd "$TARGET_DIR"
-              zip "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
+              zip "${FOLDER_NAME}.zip" "$FILE"
+              if [ $? -eq 0 ]; then
+                rm -f "$FILE"
+                SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+                echo "# 📥 ${FOLDER_NAME}" > "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "**Size:** ${SIZE_MB} MB" >> "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "## Download" >> "$TARGET_DIR/README.md"
+                echo "Download ${FOLDER_NAME}.zip and extract." >> "$TARGET_DIR/README.md"
+                echo "" >> "$TARGET_DIR/README.md"
+                echo "*Created by [avasam.ir](https://avasam.ir)*" >> "$TARGET_DIR/README.md"
+                echo "  ✅ Created zip (${SIZE_MB}MB)"
+              else
+                echo "  ❌ Zip failed for $BASENAME"
+              fi
               cd - > /dev/null
-              rm -f "$FILE"
-              SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-              printf '# 📥 %s\n\n**Size:** %s MB\n\n## Download\nDownload %s.zip and extract.\n\n*Created by [avasam.ir](https://avasam.ir)*\n' "$FOLDER_NAME" "$SIZE_MB" "$FOLDER_NAME" > "$TARGET_DIR/README.md"
-              echo "  ✅ Created zip (${SIZE_MB}MB)"
             fi
           done
 
