@@ -7,7 +7,11 @@ const { execSync } = require("child_process");
 const apiId = parseInt(process.env.API_ID);
 const apiHash = process.env.API_HASH;
 const stringSession = process.env.STRING_SESSION;
-const postUrl = process.env.POST_URL;
+
+// دریافت لینک‌ها - می‌تواند با فاصله یا خط جدید جدا شده باشد
+const postUrlsInput = process.env.POST_URLS || process.env.POST_URL || "";
+// Split بر اساس فاصله و خط جدید
+const postUrls = postUrlsInput.split(/\s+/).filter(url => url.trim() && url.startsWith('http'));
 
 function sanitizeFilename(filename) {
   return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
@@ -68,6 +72,17 @@ async function downloadMediaFile(client, media, outputPath, fileName) {
   });
 }
 
+async function getFileNameFromMedia(media) {
+  if (media.document && media.document.attributes) {
+    for (const attr of media.document.attributes) {
+      if (attr.className === 'DocumentAttributeFilename') {
+        return sanitizeFilename(attr.fileName);
+      }
+    }
+  }
+  return null;
+}
+
 async function downloadPost(client, postUrl) {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`📌 Processing: ${postUrl}`);
@@ -101,7 +116,6 @@ async function downloadPost(client, postUrl) {
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Message ID: ${msgId}`);
   
-  // استفاده از مسیر موقت که بعداً توسط کد اصلی پردازش می‌شه
   const postDir = `/tmp/telegram_downloads/${channelName}/${msgId}`;
   fs.mkdirSync(postDir, { recursive: true });
   
@@ -117,15 +131,7 @@ async function downloadPost(client, postUrl) {
   if (message.media) {
     console.log(`📥 Downloading media...`);
     
-    let fileName = null;
-    if (message.media.document && message.media.document.attributes) {
-      for (const attr of message.media.document.attributes) {
-        if (attr.className === 'DocumentAttributeFilename') {
-          fileName = sanitizeFilename(attr.fileName);
-          break;
-        }
-      }
-    }
+    let fileName = await getFileNameFromMedia(message.media);
     
     if (!fileName) {
       const mediaType = message.media.className;
@@ -169,17 +175,38 @@ async function downloadPost(client, postUrl) {
     } catch (err) {
       console.error(`   ❌ Download error: ${err.message}`);
     }
+  } else {
+    console.log(`⚠️ No media in this post`);
   }
   
+  const totalSize = downloadedFiles.reduce((sum, f) => {
+    try { return sum + fs.statSync(f).size; } catch { return sum; }
+  }, 0);
+  
+  const infoFile = path.join(postDir, 'post_info.json');
+  fs.writeFileSync(infoFile, JSON.stringify({
+    url: postUrl,
+    channel: channelName,
+    postId: msgId,
+    date: message.date,
+    files: downloadedFiles.map(f => path.basename(f)),
+    totalSizeMB: (totalSize / 1024 / 1024).toFixed(2)
+  }, null, 2));
+  
+  console.log(`📊 Summary: ${downloadedFiles.length} file(s), ${(totalSize/1024/1024).toFixed(2)}MB`);
   console.log(`📁 Saved to: ${postDir}`);
+  
   return postDir;
 }
 
 async function main() {
   let client = null;
+  const downloadedDirs = [];
   
   try {
     console.log('🚀 Connecting to Telegram API...');
+    console.log(`📌 Total URLs to download: ${postUrls.length}`);
+    console.log(`📌 URLs: ${postUrls.join(', ')}\n`);
     
     const session = new StringSession(stringSession);
     client = new TelegramClient(session, apiId, apiHash, {
@@ -195,13 +222,23 @@ async function main() {
     
     console.log('✅ Connected!\n');
     
-    const postDir = await downloadPost(client, postUrl);
+    // دانلود همه لینک‌ها
+    for (let i = 0; i < postUrls.length; i++) {
+      console.log(`\n📥 [${i+1}/${postUrls.length}] Downloading...`);
+      const postDir = await downloadPost(client, postUrls[i]);
+      downloadedDirs.push(postDir);
+    }
     
-    // ذخیره مسیر برای استفاده در مرحله بعد
+    // ذخیره همه مسیرهای دانلود شده
     const outputFile = process.env.OUTPUT_FILE || '/tmp/downloaded_post_dir.txt';
-    fs.writeFileSync(outputFile, postDir);
+    fs.writeFileSync(outputFile, downloadedDirs.join('\n'));
     
-    console.log(`\n✅ Download completed!`);
+    // همچنین در فایل all_post_dirs.txt ذخیره کن
+    fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n'));
+    
+    console.log(`\n${'='.repeat(50)}`);
+    console.log(`✅ All downloads completed! (${downloadedDirs.length} posts)`);
+    console.log(`${'='.repeat(50)}`);
     
   } catch (error) {
     console.error('❌ Error:', error.message);
