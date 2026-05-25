@@ -75,17 +75,21 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 1
-          lfs: false
+          lfs: false  # مهم: غیرفعال کردن LFS در checkout
 
       - name: Remove Git LFS tracking
         run: |
+          # حذف تنظیمات LFS از مخزن
           git lfs uninstall 2>/dev/null || true
+          
+          # حذف فایل .gitattributes اگر وجود دارد
           rm -f .gitattributes
-          git config --local --unset-all filter.lfs.process 2>/dev/null || true
-          git config --local --unset-all filter.lfs.smudge 2>/dev/null || true
-          git config --local --unset-all filter.lfs.clean 2>/dev/null || true
-          git config --global filter.lfs.smudge ""
-          git config --global filter.lfs.clean ""
+          
+          # حذف اشاره‌گرهای LFS از تاریخچه (اختیاری)
+          git config --local --unset filter.lfs.process 2>/dev/null || true
+          git config --local --unset filter.lfs.smudge 2>/dev/null || true
+          git config --local --unset filter.lfs.clean 2>/dev/null || true
+          
           echo "✅ Git LFS disabled"
 
       - name: Setup Node.js
@@ -99,13 +103,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip curl bc file python3 aria2
 
-      - name: Configure Git
+      - name: Configure Git (without LFS)
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.maxRequestBuffer 100M
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-          echo "Git configured"
+          
+          # مطمئن شوید که LFS غیرفعال است
+          git config --global filter.lfs.smudge ""
+          git config --global filter.lfs.clean ""
+          
+          echo "Git configured (LFS disabled)"
 
       - name: Download from Telegram
         env:
@@ -113,14 +122,17 @@ jobs:
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           STRING_SESSION: ${{ secrets.TELEGRAM_STRING_SESSION }}
         run: |
+          # بررسی وجود فایل download_telegram.js
           if [ ! -f "download_telegram.js" ]; then
             echo "❌ download_telegram.js not found in repository!"
             exit 1
           fi
           
+          # پاکسازی پوشه قبلی
           sudo rm -rf /tmp/telegram_downloads
           mkdir -p /tmp/telegram_downloads
           
+          # پردازش هر لینک
           echo "${{ github.event.inputs.post_urls }}" | while IFS= read -r URL; do
             if [ -z "$URL" ]; then
               continue
@@ -168,12 +180,30 @@ jobs:
           mkdir -p "$BACKUP_DIR"
           echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
 
-          mkdir -p tmp_downloads
+          mkdir -p downloads tmp_downloads
+
+          check_disk_space() {
+            local AVAILABLE_SPACE=$(df --output=avail /tmp | tail -n 1)
+            local AVAILABLE_GB=$((AVAILABLE_SPACE / 1024 / 1024))
+            echo "Available disk space: ${AVAILABLE_GB}GB"
+            if [ "$AVAILABLE_SPACE" -lt 1048576 ]; then
+              echo "⚠️ WARNING: Low disk space! Only ${AVAILABLE_GB}GB remaining"
+              return 1
+            fi
+            return 0
+          }
 
           cleanup_temp_files() {
+            echo "Cleaning up temporary files..."
             rm -f tmp_downloads/*.aria2 2>/dev/null
             rm -f tmp_downloads/*.part 2>/dev/null
             sync
+          }
+
+          RANDOM_WORDS=("alpha" "beta" "gamma" "delta" "epsilon" "zeta" "theta" "kappa" "lambda" "sigma" "omega" "nova" "star" "moon" "sun" "sky" "cloud" "river" "ocean" "mountain")
+
+          get_random_word() {
+            echo "${RANDOM_WORDS[$RANDOM % ${#RANDOM_WORDS[@]}]}_$RANDOM"
           }
 
           get_unique_folder() {
@@ -183,14 +213,18 @@ jobs:
               echo "$NAME"
               return
             fi
-            echo "${NAME}_$(date +%s)_$RANDOM"
+            local RANDOM_SUFFIX=$(get_random_word)
+            while [ -d "$BASE_PATH/${NAME}_${RANDOM_SUFFIX}" ] || [ -d "$BACKUP_DIR/${NAME}_${RANDOM_SUFFIX}" ]; do
+              RANDOM_SUFFIX=$(get_random_word)
+            done
+            echo "${NAME}_${RANDOM_SUFFIX}"
           }
 
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
 
-          # کپی فایل‌های دانلود شده
+          # کپی فایل‌های دانلود شده از تلگرام به tmp_downloads
           echo "Copying downloaded files from Telegram..."
           while IFS= read -r POST_DIR; do
             if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
@@ -206,6 +240,8 @@ jobs:
             done
           done < /tmp/all_post_dirs.txt
 
+          check_disk_space
+
           # پردازش فایل‌ها
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
@@ -217,104 +253,232 @@ jobs:
             fi
 
             SIZE=$(stat -c%s "$FILE")
+
+            if [ "$SIZE" -le 0 ]; then
+              echo "WARNING: File has zero or invalid size: $FILE"
+              rm -f "$FILE"
+              continue
+            fi
+
             BASENAME=$(basename "$FILE")
             BASENAME_NO_EXT="${BASENAME%.*}"
+            EXT="${BASENAME##*.}"
             
+            if [ "$BASENAME" = "$BASENAME_NO_EXT" ] || [ -z "$EXT" ] || [ "$EXT" = "$BASENAME" ]; then
+              DETECTED_TYPE=$(file --mime-type -b "$FILE" | cut -d'/' -f2)
+              case "$DETECTED_TYPE" in
+                "mp4") EXT="mp4" ;;
+                "mp3") EXT="mp3" ;;
+                "mpeg") EXT="mpg" ;;
+                "pdf") EXT="pdf" ;;
+                "zip") EXT="zip" ;;
+                "rar") EXT="rar" ;;
+                "x-rar") EXT="rar" ;;
+                "x-msdos-program") EXT="exe" ;;
+                "x-executable") EXT="exe" ;;
+                "x-msdownload") EXT="exe" ;;
+                "plain") EXT="txt" ;;
+                "jpeg") EXT="jpg" ;;
+                "png") EXT="png" ;;
+                "gif") EXT="gif" ;;
+                "x-7z-compressed") EXT="7z" ;;
+                "x-tar") EXT="tar" ;;
+                "gzip") EXT="gz" ;;
+                *) EXT="" ;;
+              esac
+              if [ -n "$EXT" ]; then
+                BASENAME_WITH_EXT="${BASENAME_NO_EXT}.${EXT}"
+              else
+                BASENAME_WITH_EXT="$BASENAME"
+              fi
+            else
+              BASENAME_WITH_EXT="$BASENAME"
+            fi
+
             FOLDER_NAME=$(get_unique_folder "$BACKUP_DIR" "$BASENAME_NO_EXT")
-            TARGET_DIR="$BACKUP_DIR/$FOLDER_NAME"
-            mkdir -p "$TARGET_DIR"
+            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+
+            FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
+
+            check_disk_space
 
             if [ "$SIZE" -gt "$SPLIT_THRESHOLD_BYTES" ]; then
               echo "$BASENAME is $(( SIZE / 1024 / 1024 ))MB - splitting into ${SPLIT_THRESHOLD_MB}MB parts"
 
-              cd "$TARGET_DIR"
+              ARCHIVE_BASE="$BACKUP_DIR/${FOLDER_NAME}/${BASENAME_NO_EXT}"
+
+              TEMP_DIR="/tmp/zip_temp_$$"
+              mkdir -p "$TEMP_DIR"
+              cp "$FILE" "$TEMP_DIR/${BASENAME_WITH_EXT}"
+              
+              cd "$TEMP_DIR"
               if [ -n "$ZIP_PASSWORD" ]; then
-                zip -0 -P "${ZIP_PASSWORD}" -s ${SPLIT_THRESHOLD_MB}m "${BASENAME_NO_EXT}.zip" "$FILE"
+                zip -0 -P "${ZIP_PASSWORD}" -s ${SPLIT_THRESHOLD_MB}m \
+                  "${ARCHIVE_BASE}.zip" \
+                  "${BASENAME_WITH_EXT}"
               else
-                zip -0 -s ${SPLIT_THRESHOLD_MB}m "${BASENAME_NO_EXT}.zip" "$FILE"
+                zip -0 -s ${SPLIT_THRESHOLD_MB}m \
+                  "${ARCHIVE_BASE}.zip" \
+                  "${BASENAME_WITH_EXT}"
               fi
               cd - > /dev/null
               
+              rm -rf "$TEMP_DIR"
               rm -f "$FILE"
-              
-              PARTS_COUNT=$(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | wc -l)
-              
-              # محاسبه حجم کل
+              cleanup_temp_files
+
+              PARTS_COUNT=$(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | wc -l)
+              echo "Parts created in folder $BACKUP_DIR/$FOLDER_NAME: $PARTS_COUNT files"
+
+              if [ "$PARTS_COUNT" -eq 0 ]; then
+                echo "ERROR: No archive parts were created for $BASENAME"
+                continue
+              fi
+
               TOTAL_SIZE=0
-              for PART in "$TARGET_DIR"/*; do
-                [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
+              for part_file in "$BACKUP_DIR/${FOLDER_NAME}"/*; do
+                if [ -f "$part_file" ]; then
+                  PART_SIZE=$(stat -c%s "$part_file" 2>/dev/null || echo 0)
+                  TOTAL_SIZE=$((TOTAL_SIZE + PART_SIZE))
+                fi
               done
               TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
 
-              # ایجاد README
-              cat > "$TARGET_DIR/README.md" << EOF
-# 📥 ${BASENAME_NO_EXT}
-
-**Size:** ${TOTAL_SIZE_MB} MB  
-**Parts:** ${PARTS_COUNT}  
-**Status:** ✅ Complete
-
----
-
-## 📦 Download Links
-
-| Part | File |
-|------|------|
-EOF
-              for PART in $(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | sort); do
-                PART_NAME=$(basename "$PART")
-                echo "| ${PART_NAME##*.} | \`${PART_NAME}\` |" >> "$TARGET_DIR/README.md"
+              DOWNLOAD_LINKS_MD=""
+              LINK_NUM=0
+              for part_file in $(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | sort); do
+                if [ -f "$part_file" ]; then
+                  PART_BASENAME=$(basename "$part_file")
+                  PART_ENCODED=$(urlencode "${PART_BASENAME}")
+                  RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
+                  LINK_NUM=$((LINK_NUM + 1))
+                  DOWNLOAD_LINKS_MD="${DOWNLOAD_LINKS_MD}| ${LINK_NUM} | \`${PART_BASENAME}\` | [Download](${RAW_LINK}) |"$'\n'
+                fi
               done
 
-              cat >> "$TARGET_DIR/README.md" << 'EOF'
+              README_FILE="$BACKUP_DIR/${FOLDER_NAME}/README.md"
+              {
+                printf '%s\n' "# ${BASENAME_NO_EXT}"
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## Download Information"
+                printf '%s\n' ""
+                printf '%s\n' "| Property | Value |"
+                printf '%s\n' "|----------|-------|"
+                printf '%s\n' "| **Original File** | \`${BASENAME_WITH_EXT}\` |"
+                printf '%s\n' "| **Total Size** | **${PARTS_COUNT} parts** - **${TOTAL_SIZE_MB} MB** |"
+                printf '%s\n' "| **Status** | **Complete (100%)** |"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  printf '%s\n' "| **Password Protected** | **YES** |"
+                else
+                  printf '%s\n' "| **Password Protected** | **NO** |"
+                fi
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## Download Links"
+                printf '%s\n' ""
+                printf '%s\n' "| # | File | Link |"
+                printf '%s\n' "|---|------|------|"
+                printf '%s' "${DOWNLOAD_LINKS_MD}"
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## How to Extract"
+                printf '%s\n' ""
+                printf '%s\n' "1. **Download all parts** (\`.zip\`, \`.z01\`, \`.z02\`...)"
+                printf '%s\n' "2. **Open** \`${BASENAME_NO_EXT}.zip\` with WinRAR, 7-Zip, Ark, or any standard zip tool"
+                printf '%s\n' "3. **Extract** — all parts combine automatically"
+                printf '%s\n' "4. After extraction, you will get **\`${BASENAME_WITH_EXT}\`**"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  printf '%s\n' "5. Enter the password when prompted"
+                fi
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "*This tool created by [avasam.ir](https://avasam.ir)*"
+              } > "$README_FILE"
 
----
-
-## 📖 How to Extract
-
-1. **Download ALL parts** to the same folder
-2. **Extract** the `.zip` file
-
-*Created by [avasam.ir](https://avasam.ir)*
-EOF
-              echo "  ✅ Created ${PARTS_COUNT} part(s) (${TOTAL_SIZE_MB}MB total)"
+              echo "Created README.md for split archive"
 
             else
-              echo "$BASENAME - creating zip archive"
+              echo "$BASENAME - creating zip archive in folder: $BACKUP_DIR/$FOLDER_NAME"
+
+              TEMP_DIR="/tmp/zip_temp_$$"
+              mkdir -p "$TEMP_DIR"
+              cp "$FILE" "$TEMP_DIR/${BASENAME_WITH_EXT}"
               
-              cd "$TARGET_DIR"
+              cd "$TEMP_DIR"
               if [ -n "$ZIP_PASSWORD" ]; then
-                zip -0 -P "${ZIP_PASSWORD}" "${BASENAME_NO_EXT}.zip" "$FILE"
+                zip -0 -P "${ZIP_PASSWORD}" \
+                  "$BACKUP_DIR/${FOLDER_NAME}/${BASENAME_NO_EXT}.zip" \
+                  "${BASENAME_WITH_EXT}"
               else
-                zip -0 "${BASENAME_NO_EXT}.zip" "$FILE"
+                zip -0 \
+                  "$BACKUP_DIR/${FOLDER_NAME}/${BASENAME_NO_EXT}.zip" \
+                  "${BASENAME_WITH_EXT}"
               fi
               cd - > /dev/null
               
+              rm -rf "$TEMP_DIR"
               rm -f "$FILE"
+              cleanup_temp_files
+
+              if [ ! -s "$BACKUP_DIR/${FOLDER_NAME}/${BASENAME_NO_EXT}.zip" ]; then
+                echo "ERROR: Failed to create archive for $BASENAME"
+                rm -f "$BACKUP_DIR/${FOLDER_NAME}/${BASENAME_NO_EXT}.zip"
+                continue
+              fi
+
               SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-              
-              cat > "$TARGET_DIR/README.md" << EOF
-# 📥 ${BASENAME_NO_EXT}
+              FILE_ENCODED=$(urlencode "${BASENAME_NO_EXT}.zip")
+              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${FILE_ENCODED}"
 
-**Size:** ${SIZE_MB} MB  
-**Status:** ✅ Complete
+              README_FILE="$BACKUP_DIR/${FOLDER_NAME}/README.md"
+              {
+                printf '%s\n' "# ${BASENAME_NO_EXT}"
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## Download Information"
+                printf '%s\n' ""
+                printf '%s\n' "| Property | Value |"
+                printf '%s\n' "|----------|-------|"
+                printf '%s\n' "| **Original File** | \`${BASENAME_WITH_EXT}\` |"
+                printf '%s\n' "| **Size** | ${SIZE_MB} MB |"
+                printf '%s\n' "| **Status** | **Complete (100%)** |"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  printf '%s\n' "| **Password Protected** | **YES** |"
+                else
+                  printf '%s\n' "| **Password Protected** | **NO** |"
+                fi
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## Download Link"
+                printf '%s\n' ""
+                printf '%s\n' "| File | Link |"
+                printf '%s\n' "|------|------|"
+                printf '%s\n' "| \`${BASENAME_NO_EXT}.zip\` | [Download](${RAW_LINK}) |"
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "## How to Extract"
+                printf '%s\n' ""
+                printf '%s\n' "1. **Download** \`${BASENAME_NO_EXT}.zip\`"
+                printf '%s\n' "2. **Extract** the zip file"
+                printf '%s\n' "3. After extraction, you will get **\`${BASENAME_WITH_EXT}\`**"
+                if [ -n "$ZIP_PASSWORD" ]; then
+                  printf '%s\n' "4. Enter the password when prompted"
+                fi
+                printf '%s\n' ""
+                printf '%s\n' "---"
+                printf '%s\n' ""
+                printf '%s\n' "*This tool created by [avasam.ir](https://avasam.ir)*"
+              } > "$README_FILE"
 
----
-
-## 📦 Download
-
-\`${BASENAME_NO_EXT}.zip\`
-
----
-
-## 📖 How to Extract
-
-1. **Download** the zip file
-2. **Extract** with any archive tool
-
-*Created by [avasam.ir](https://avasam.ir)*
-EOF
-              echo "  ✅ Created zip archive (${SIZE_MB}MB)"
+              echo "Created zip archive and README.md"
             fi
           done
           
@@ -323,84 +487,97 @@ EOF
           
           echo ""
           echo "===== Backup folder contents ====="
-          ls -la "$BACKUP_DIR"
+          find "$BACKUP_DIR" -type f | head -50
+          echo ""
+          echo "===== Disk space after processing ====="
+          df -h /tmp
 
-      - name: Copy to downloads folder and create README
+      - name: Update README.md with download links
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          
-          # حذف پوشه downloads قدیمی
-          rm -rf downloads
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+
           mkdir -p downloads
-          
-          # کپی فایل‌ها به پوشه downloads
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            for FOLDER in "$BACKUP_DIR"/*; do
-              if [ -d "$FOLDER" ]; then
-                FOLDER_NAME=$(basename "$FOLDER")
-                cp -r "$FOLDER" "downloads/$FOLDER_NAME"
-                echo "✅ Copied: $FOLDER_NAME"
+            cp -r "$BACKUP_DIR"/* downloads/
+          fi
+
+          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+
+          if [ -z "$FOLDERS" ]; then
+            echo "No folders found in downloads"
+            exit 0
+          fi
+
+          urlencode() {
+            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
+          }
+
+          {
+            echo "# Downloaded list :"
+            echo ""
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "- [${FOLDER}](./${FOLDER_ENCODED})"
               fi
             done
+            echo ""
+            echo "---"
+            echo ""
+            echo "*This tool created by [avasam.ir](https://avasam.ir)*"
+          } > "downloads/README.md"
+
+          echo "downloads/README.md created with list of downloaded files"
+
+          SECTION_TITLE="فایل های دانلود شده در گیتهاب شما :"
+
+          if [ ! -f "README.md" ]; then
+            echo "# AVASAM Downloader" > README.md
+            echo "" >> README.md
+            echo "https://avasam.ir" >> README.md
+            echo "" >> README.md
           fi
-          
-          # نمایش ساختار نهایی
-          echo ""
-          echo "📁 Final downloads structure:"
-          ls -la downloads/
-          for DIR in downloads/*/; do
-            echo "  Contents of $(basename "$DIR"):"
-            ls -la "$DIR"
-          done
 
-      - name: Update root README
-        run: |
-          echo "📝 Updating root README..."
-          
-          cat > README.md << 'EOF'
-          # 📥 Telegram Downloader
-          
-          دانلود خودکار پست‌های تلگرام و ذخیره در گیت‌هاب
-          
-          ---
-          
-          ## 📁 دانلودهای موجود
-          
-          EOF
-          
-          for FOLDER in downloads/*/; do
-            if [ -d "$FOLDER" ]; then
-              FOLDER_NAME=$(basename "$FOLDER")
-              ZIP_COUNT=$(ls -1 "$FOLDER"/*.zip 2>/dev/null | wc -l)
-              PART_COUNT=$(ls -1 "$FOLDER"/*.z* 2>/dev/null | wc -l)
-              TOTAL_PARTS=$((ZIP_COUNT + PART_COUNT))
-              
-              if [ $TOTAL_PARTS -gt 0 ]; then
-                SIZE=$(du -sh "$FOLDER" 2>/dev/null | cut -f1)
-                echo "- **${FOLDER_NAME}** - ${SIZE} - [مشاهده](./${FOLDER}/)" >> README.md
+          if grep -q "$SECTION_TITLE" README.md; then
+            sed -i "/$SECTION_TITLE/,/^---$/d" README.md
+            sed -i '${/^$/d;}' README.md
+          fi
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "## $SECTION_TITLE"
+            echo ""
+            COUNTER=1
+            echo "$FOLDERS" | while read -r FOLDER; do
+              if [ -n "$FOLDER" ]; then
+                FOLDER_ENCODED=$(urlencode "${FOLDER}")
+                echo "${COUNTER}. [$FOLDER]($REPO_URL/$FOLDER_ENCODED)"
+                echo ""
+                COUNTER=$((COUNTER + 1))
               fi
-            fi
-          done
-          
-          echo "" >> README.md
-          echo "---" >> README.md
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          
-          echo "✅ README.md updated"
+            done
+            echo "---"
+          } >> README.md
 
-      - name: Commit & Push
+          echo "README.md updated with download links"
+
+      - name: Commit & Push (without LFS)
         run: |
           BRANCH="${GITHUB_REF_NAME}"
+          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
           if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
             echo "❌ No files to commit!"
             exit 1
           fi
           
-          # نمایش فایل‌هایی که قرار است commit شوند
-          echo "Files to commit:"
-          find downloads -type f | head -20
+          # اطمینان از غیرفعال بودن LFS برای push
+          git lfs uninstall 2>/dev/null || true
           
+          # اضافه کردن فایل‌ها به صورت عادی (بدون LFS)
           git add -f downloads/
           git add README.md
           
@@ -410,6 +587,8 @@ EOF
             
             for i in {1..5}; do
               echo "Push attempt $i/5..."
+              
+              # push عادی بدون LFS
               if git push origin HEAD:"$BRANCH" 2>&1; then
                 echo "✅ Push successful!"
                 break
@@ -428,5 +607,6 @@ EOF
           echo ""
           echo "=========================================="
           echo "✅ Process completed successfully!"
-          echo "📁 Files are in the 'downloads' folder"
+          echo "📁 Files are stored directly in the repository (not LFS)"
+          echo "📦 Each file is split into 45MB ZIP parts"
           echo "=========================================="
