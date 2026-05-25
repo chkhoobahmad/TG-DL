@@ -72,16 +72,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zip curl bc file
 
-      - name: Configure Git for Large Files
+      - name: Configure Git
         run: |
           git config --global http.postBuffer 524288000
           git config --global http.maxRequestBuffer 100M
-          git config --global core.compression 0
-          git config --global pack.windowMemory 256m
-          git config --global pack.packSizeLimit 100m
-          git config --global pack.threads 1
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
 
       - name: Download Multiple Posts from Telegram
         id: download
@@ -371,7 +367,6 @@ jobs:
               const allDirs = allDownloads.map(d => d.postDir);
               fs.writeFileSync('/tmp/all_post_dirs.txt', allDirs.join('\n'));
               
-              // Also save each post info separately
               for (const d of allDownloads) {
                 const postInfoFile = `/tmp/post_${d.channel}_${d.postId}.txt`;
                 fs.writeFileSync(postInfoFile, d.postDir);
@@ -382,7 +377,6 @@ jobs:
               console.log(`${'='.repeat(60)}`);
               console.log(`✅ Total posts downloaded: ${allDownloads.length}`);
               console.log(`📁 Total size: ${downloadsInfo.posts.reduce((sum, p) => sum + p.size, 0).toFixed(2)}MB`);
-              console.log(`📁 Post directories saved to: /tmp/all_post_dirs.txt`);
               
             } catch (error) {
               console.error('❌ Fatal error:', error);
@@ -427,11 +421,10 @@ jobs:
             exit $DOWNLOAD_EXIT
           fi
 
-      - name: Create ZIP archives (without split)
+      - name: Create split ZIP archives (45MB parts)
         run: |
-          echo "📁 Checking for post directories..."
+          echo "📁 Creating split ZIP archives (45MB per part)..."
           
-          # Get directories from multiple sources
           POST_DIRS=""
           if [ -f "/tmp/all_post_dirs.txt" ]; then
             POST_DIRS=$(cat /tmp/all_post_dirs.txt)
@@ -439,7 +432,6 @@ jobs:
           fi
           
           if [ -z "$POST_DIRS" ]; then
-            # Try to find directories manually
             POST_DIRS=$(find /tmp/telegram_downloads -mindepth 2 -maxdepth 2 -type d 2>/dev/null)
             echo "Found directories via find: $POST_DIRS"
           fi
@@ -449,20 +441,7 @@ jobs:
             exit 1
           fi
           
-          BACKUP_DIR="/tmp/backup_$$"
-          mkdir -p "$BACKUP_DIR"
-          echo "$BACKUP_DIR" > /tmp/backup_dir_path.txt
-          
-          REPO_OWNER="${{ github.repository_owner }}"
-          REPO_NAME="${{ github.event.repository.name }}"
-          BRANCH="${GITHUB_REF_NAME}"
-          
-          urlencode() {
-            python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
-          }
-          
-          # Clear previous folders list
-          > /tmp/folders_list.txt
+          mkdir -p downloads
           
           echo "$POST_DIRS" | while read POST_DIR; do
             if [ -z "$POST_DIR" ] || [ ! -d "$POST_DIR" ]; then
@@ -472,22 +451,25 @@ jobs:
             CHANNEL_NAME=$(basename $(dirname "$POST_DIR"))
             POST_ID=$(basename "$POST_DIR")
             FOLDER_NAME="${CHANNEL_NAME}_${POST_ID}"
+            TARGET_DIR="downloads/${FOLDER_NAME}"
             
-            mkdir -p "$BACKUP_DIR/$FOLDER_NAME"
+            mkdir -p "$TARGET_DIR"
             
             echo ""
-            echo "📦 Creating archive for: $CHANNEL_NAME/$POST_ID"
+            echo "📦 Creating split archive for: $CHANNEL_NAME/$POST_ID"
             echo "   Source: $POST_DIR"
             
-            # Copy all files from post directory
+            # Copy all files to temp directory
+            TEMP_DIR="/tmp/split_${FOLDER_NAME}"
+            mkdir -p "$TEMP_DIR"
+            
             FILE_COUNT=0
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ] && [ -s "$FILE" ]; then
                 ORIGINAL_NAME=$(basename "$FILE")
                 SAFE_NAME=$(echo "$ORIGINAL_NAME" | sed 's/[<>:"|?*]/_/g')
-                cp "$FILE" "$BACKUP_DIR/$FOLDER_NAME/$SAFE_NAME"
-                SIZE=$(stat -c%s "$FILE" | awk '{printf "%.2fMB", $1/1024/1024}')
-                echo "   ✅ Added: $SAFE_NAME ($SIZE)"
+                cp "$FILE" "$TEMP_DIR/$SAFE_NAME"
+                echo "   ✅ Added: $SAFE_NAME"
                 FILE_COUNT=$((FILE_COUNT + 1))
               fi
             done
@@ -497,123 +479,136 @@ jobs:
               continue
             fi
             
-            # Create single zip archive
-            cd "$BACKUP_DIR/$FOLDER_NAME"
+            # Create split zip (45MB = 45000000 bytes) or ~43MB for safety
+            cd "$TEMP_DIR"
             
-            ARCHIVE_NAME="${POST_ID}"
+            echo "   📀 Creating split ZIP (45MB parts)..."
+            zip -r -s 43m "${FOLDER_NAME}.zip" ./* > /dev/null 2>&1
             
-            echo "   📀 Creating zip archive..."
-            zip -r -9 "${ARCHIVE_NAME}.zip" ./* > /dev/null 2>&1
-            
-            # Remove original files, keep only zip
-            for FILE in *; do
-              if [ -f "$FILE" ] && [ "$FILE" != "${ARCHIVE_NAME}.zip" ]; then
-                rm -f "$FILE"
-              fi
-            done
+            # Move all split parts to target directory
+            mv ${FOLDER_NAME}.z* "$TARGET_DIR/" 2>/dev/null || mv *.z* "$TARGET_DIR/" 2>/dev/null
             
             cd - > /dev/null
             
-            # Get archive size
-            if [ -f "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" ]; then
-              ARCHIVE_SIZE=$(stat -c%s "$BACKUP_DIR/$FOLDER_NAME/${ARCHIVE_NAME}.zip" 2>/dev/null || echo 0)
-              ARCHIVE_SIZE_MB=$(echo "scale=2; $ARCHIVE_SIZE / 1024 / 1024" | bc)
-              
-              # Create download link
-              FOLDER_ENCODED=$(urlencode "${FOLDER_NAME}")
-              PART_ENCODED=$(urlencode "${ARCHIVE_NAME}.zip")
-              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_ENCODED}/${PART_ENCODED}"
-              
-              # Create README for this post
-              {
-                echo "# 📥 Telegram Post ${POST_ID}"
-                echo ""
-                echo "---"
-                echo ""
-                echo "## 📊 Download Information"
-                echo ""
-                echo "| Property | Value |"
-                echo "|----------|-------|"
-                echo "| **Channel** | \`${CHANNEL_NAME}\` |"
-                echo "| **Post ID** | \`${POST_ID}\` |"
-                echo "| **Archive Size** | ${ARCHIVE_SIZE_MB} MB |"
-                echo "| **Status** | ✅ **Complete** |"
-                echo ""
-                echo "---"
-                echo ""
-                echo "## 🔗 Download Link"
-                echo ""
-                echo "| File | Link |"
-                echo "|------|------|"
-                echo "| \`${ARCHIVE_NAME}.zip\` | [Download](${RAW_LINK}) |"
-                echo ""
-                echo "---"
-                echo ""
-                echo "## 📖 How to Extract"
-                echo ""
-                echo "1. **Download** \`${ARCHIVE_NAME}.zip\`"
-                echo "2. **Extract** with WinRAR, 7-Zip, or any zip tool"
-                echo ""
-                echo "---"
-                echo ""
-                echo "*🛠️ Created by [avasam.ir](https://avasam.ir)*"
-              } > "$BACKUP_DIR/$FOLDER_NAME/README.md"
-              
-              echo "   ✅ Archive created (${ARCHIVE_SIZE_MB}MB)"
-              
-              # Save folder name for later
-              echo "$FOLDER_NAME" >> /tmp/folders_list.txt
-            else
-              echo "   ❌ Failed to create archive!"
-            fi
+            # Count parts
+            PART_COUNT=$(ls -1 "$TARGET_DIR"/*.z* 2>/dev/null | wc -l)
             
+            # Get total size of all parts
+            TOTAL_SIZE=0
+            for PART in "$TARGET_DIR"/*.z*; do
+              if [ -f "$PART" ]; then
+                SIZE=$(stat -c%s "$PART" 2>/dev/null || echo 0)
+                TOTAL_SIZE=$((TOTAL_SIZE + SIZE))
+              fi
+            done
+            TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
+            
+            # Create README for this post
+            REPO_OWNER="${{ github.repository_owner }}"
+            REPO_NAME="${{ github.event.repository.name }}"
+            BRANCH="${GITHUB_REF_NAME}"
+            
+            cat > "$TARGET_DIR/README.md" << EOF
+# 📥 Telegram Post ${POST_ID}
+
+---
+
+## 📊 Download Information
+
+| Property | Value |
+|----------|-------|
+| **Channel** | \`${CHANNEL_NAME}\` |
+| **Post ID** | \`${POST_ID}\` |
+| **Total Parts** | ${PART_COUNT} |
+| **Total Size** | ${TOTAL_SIZE_MB} MB |
+| **Part Size** | ~45 MB each |
+| **Status** | ✅ **Complete** |
+
+---
+
+## 🔗 How to Download & Extract
+
+### Option 1: Download all parts using GitHub
+1. Download all files ending with \`.z01\`, \`.z02\`, ..., \`.zip\`
+2. Place them in the **same folder**
+3. Extract using:
+   - **Windows**: Right-click \`.zip\` → Extract Here
+   - **Linux/Mac**: \`unzip ${FOLDER_NAME}.zip\`
+
+### Option 2: Direct download links
+
+| Part | File | Size |
+|------|------|------|
+EOF
+            
+            # List all parts with download links
+            for PART in $(ls -1 "$TARGET_DIR"/*.z* 2>/dev/null | sort); do
+              PART_NAME=$(basename "$PART")
+              PART_SIZE=$(stat -c%s "$PART" 2>/dev/null | awk '{printf "%.2f MB", $1/1024/1024}')
+              PART_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$PART_NAME'))")
+              RAW_LINK="https://github.com/${REPO_OWNER}/${REPO_NAME}/raw/${BRANCH}/downloads/${FOLDER_NAME}/${PART_ENCODED}"
+              echo "| \`${PART_NAME}\` | [Download](${RAW_LINK}) | ${PART_SIZE} |" >> "$TARGET_DIR/README.md"
+            done
+            
+            cat >> "$TARGET_DIR/README.md" << EOF
+
+---
+
+## 📖 How to Extract (Detailed)
+
+1. **Download all parts** (all \`.z01\`, \`.z02\`, ..., \`.zip\` files)
+2. **Place all parts** in the same directory
+3. **Extract** using any of these methods:
+
+### Windows:
+- Right-click on \`${FOLDER_NAME}.zip\`
+- Select "Extract All..."
+
+### Linux/Mac Terminal:
+\`\`\`bash
+unzip ${FOLDER_NAME}.zip
+\`\`\`
+
+### Using 7-Zip:
+\`\`\`bash
+7z x ${FOLDER_NAME}.zip
+\`\`\`
+
+---
+
+*🛠️ Created by [avasam.ir](https://avasam.ir)*
+EOF
+            
+            echo "   ✅ Created ${PART_COUNT} part(s) (total ${TOTAL_SIZE_MB}MB)"
+            
+            # Cleanup temp
+            rm -rf "$TEMP_DIR"
           done
           
           echo ""
-          echo "✅ All posts archived successfully!"
+          echo "✅ All split archives created successfully!"
           
-          # Debug: show what was created
+          # Debug: show structure
           echo ""
-          echo "📁 Created folders in $BACKUP_DIR:"
-          ls -la "$BACKUP_DIR/"
+          echo "📁 Created structure in downloads/:"
+          ls -la downloads/
+          for DIR in downloads/*/; do
+            echo "   Contents of $DIR:"
+            ls -la "$DIR"
+          done
 
-      - name: Copy to downloads folder and update README
+      - name: Update README files with split archives info
         run: |
-          BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-          
-          echo "📁 Backup directory: $BACKUP_DIR"
-          
-          # Create downloads directory
-          mkdir -p downloads
-          
-          # Copy all archived folders to downloads
-          if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-            cp -r "$BACKUP_DIR"/* downloads/
-            echo "✅ Copied archives to downloads folder"
-            echo "Contents of downloads:"
-            ls -la downloads/
-          else
-            echo "❌ Backup directory is empty or doesn't exist!"
-            exit 1
-          fi
-          
-          # Get all folder names from downloads
-          FOLDERS=$(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
-          
-          if [ -z "$FOLDERS" ]; then
-            echo "❌ No folders found in downloads!"
-            echo "Contents of downloads:"
-            ls -la downloads/
-            exit 1
-          fi
-          
-          echo "📁 Found folders: $FOLDERS"
+          echo "📝 Updating README files..."
           
           urlencode() {
             python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$1"
           }
           
           REPO_URL="${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}/downloads"
+          REPO_OWNER="${{ github.repository_owner }}"
+          REPO_NAME="${{ github.event.repository.name }}"
+          BRANCH="${GITHUB_REF_NAME}"
           
           # Generate downloads/README.md
           cat > downloads/README.md << 'EOF'
@@ -621,30 +616,32 @@ jobs:
           
           This folder contains downloaded posts from Telegram channels.
           
+          Each post is split into **45MB ZIP parts** for easy downloading.
+          
           ---
           
           ## 📁 Available Downloads
           
-          | # | Post | Size | Date |
-          |---|------|------|------|
+          | # | Post | Parts | Size | Date |
+          |---|------|-------|------|------|
           EOF
           
           COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
+          for FOLDER in $(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort); do
+            if [ -n "$FOLDER" ] && [ "$FOLDER" != "downloads" ]; then
               FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              PARTS=$(ls -1 downloads/${FOLDER}/*.z* 2>/dev/null | wc -l)
               SIZE="Unknown"
               DATE=$(date '+%Y-%m-%d')
               
-              # Extract size from post's README
               if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
               fi
               
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> downloads/README.md
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} parts | ${SIZE} | ${DATE} |" >> downloads/README.md
               COUNTER=$((COUNTER + 1))
             fi
           done
@@ -653,27 +650,31 @@ jobs:
           
           ---
           
-          ## 📖 How to use
+          ## 📖 How to Download & Extract
           
           1. Click on any post folder above
-          2. Download the zip file
-          3. Extract to get all files from the post
+          2. **Download ALL parts** (files ending with `.z01`, `.z02`, ..., `.zip`)
+          3. Place all parts in the **same folder**
+          4. Extract the `.zip` file using:
+             - **Windows**: Right-click → Extract All
+             - **Linux/Mac**: `unzip filename.zip`
+             - **7-Zip**: `7z x filename.zip`
           
           ---
           
           *🛠️ Created by [avasam.ir](https://avasam.ir)*
           EOF
           
-          echo "✅ downloads/README.md created with $((COUNTER - 1)) download(s)"
+          echo "✅ downloads/README.md created/updated"
           
-          # Also update root README.md
+          # Update root README.md
           ROOT_README="README.md"
           SECTION_TITLE="📥 دانلود‌های تلگرام"
           
           if [ ! -f "$ROOT_README" ]; then
             echo "# AVASAM Telegram Downloader" > "$ROOT_README"
             echo "" >> "$ROOT_README"
-            echo "دانلود خودکار فایل‌های تلگرام و آپلود در گیت‌هاب" >> "$ROOT_README"
+            echo "دانلود خودکار فایل‌های تلگرام و آپلود در گیت‌هاب (تقسیم شده به زیپ‌های ۴۵ مگابایتی)" >> "$ROOT_README"
             echo "" >> "$ROOT_README"
           fi
           
@@ -690,25 +691,26 @@ jobs:
             echo ""
             echo "## $SECTION_TITLE"
             echo ""
-            echo "| # | Post | Size | Date |"
-            echo "|---|------|------|------|"
+            echo "| # | Post | Parts | Size | Date |"
+            echo "|---|------|-------|------|------|"
           } >> "$ROOT_README"
           
           COUNTER=1
-          for FOLDER in $FOLDERS; do
-            if [ -n "$FOLDER" ]; then
+          for FOLDER in $(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort); do
+            if [ -n "$FOLDER" ] && [ "$FOLDER" != "downloads" ]; then
               FOLDER_ENCODED=$(urlencode "${FOLDER}")
+              PARTS=$(ls -1 downloads/${FOLDER}/*.z* 2>/dev/null | wc -l)
               SIZE="Unknown"
               DATE=$(date '+%Y-%m-%d')
               
               if [ -f "downloads/$FOLDER/README.md" ]; then
-                SIZE_LINE=$(grep "Archive Size" "downloads/$FOLDER/README.md" | head -1)
+                SIZE_LINE=$(grep "Total Size" "downloads/$FOLDER/README.md" | head -1)
                 if [[ "$SIZE_LINE" =~ ([0-9.]+)\ MB ]]; then
                   SIZE="${BASH_REMATCH[1]} MB"
                 fi
               fi
               
-              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${SIZE} | ${DATE} |" >> "$ROOT_README"
+              echo "| ${COUNTER} | [${FOLDER}](${REPO_URL}/${FOLDER_ENCODED}) | ${PARTS} parts | ${SIZE} | ${DATE} |" >> "$ROOT_README"
               COUNTER=$((COUNTER + 1))
             fi
           done
@@ -716,6 +718,8 @@ jobs:
           {
             echo ""
             echo "---"
+            echo ""
+            echo "> **Note:** Each post is split into 45MB parts. Download all parts and extract the main .zip file."
           } >> "$ROOT_README"
           
           echo "✅ Root README.md updated"
@@ -724,21 +728,18 @@ jobs:
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           
-          # Check if downloads folder has content
           if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
             echo "❌ No files to commit!"
             exit 1
           fi
           
-          # Add all files
           git add -f downloads/
           git add README.md
           
           if ! git diff --cached --quiet; then
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            git commit -m "Download multiple Telegram posts - $TIMESTAMP [skip ci]"
+            git commit -m "Download multiple Telegram posts (split 45MB) - $TIMESTAMP [skip ci]"
             
-            # Push with retry
             for i in {1..5}; do
               echo "Push attempt $i/5..."
               if timeout 300 git push origin HEAD:"$BRANCH" 2>&1; then
@@ -752,7 +753,7 @@ jobs:
                   git add -f downloads/
                   git add README.md
                   if ! git diff --cached --quiet; then
-                    git commit -m "Download multiple Telegram posts - $TIMESTAMP [skip ci]"
+                    git commit -m "Download multiple Telegram posts (split 45MB) - $TIMESTAMP [skip ci]"
                   fi
                 fi
               fi
@@ -764,4 +765,6 @@ jobs:
           echo ""
           echo "=========================================="
           echo "✅ Process completed successfully!"
+          echo "📁 Files are stored directly in the repository"
+          echo "📦 Each post is split into 45MB ZIP parts"
           echo "=========================================="
