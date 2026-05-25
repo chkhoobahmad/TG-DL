@@ -44,89 +44,62 @@ jobs:
         if: github.event.inputs.clean_mode == 'all'
         run: |
           echo "🧹 Cleaning ALL downloads and temporary files..."
-          if [ -d "downloads" ]; then
-            rm -rf downloads/
-            echo "✅ Removed downloads folder"
-          else
-            echo "⚠️ downloads folder not found"
-          fi
-          rm -rf /tmp/telegram_downloads 2>/dev/null || true
-          rm -rf /tmp/download_backup_* 2>/dev/null || true
-          rm -rf /tmp/zip_temp_* 2>/dev/null || true
-          rm -f /tmp/all_post_dirs.txt 2>/dev/null || true
-          rm -f /tmp/backup_dir_path.txt 2>/dev/null || true
-          echo "✅ Removed temp files"
-          rm -f *.zip 2>/dev/null || true
-          rm -f *.z[0-9]* 2>/dev/null || true
-          echo "✅ Removed orphan zip files"
+          rm -rf downloads
+          rm -rf /tmp/telegram_downloads
+          rm -f /tmp/all_post_dirs.txt
+          rm -f /tmp/backup_dir_path.txt
+          rm -f *.zip
+          rm -f *.z[0-9]*
           echo "# 📥 Telegram Downloader" > README.md
           echo "" >> README.md
           echo "دانلود خودکار پست‌های تلگرام" >> README.md
           echo "" >> README.md
           echo "---" >> README.md
           echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          echo "✅ Reset README.md"
+          echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: downloads_only
         if: github.event.inputs.clean_mode == 'downloads_only'
         run: |
           echo "🧹 Cleaning downloads folder only..."
-          if [ -d "downloads" ]; then
-            rm -rf downloads/
-            echo "✅ Removed downloads folder"
-          else
-            echo "⚠️ downloads folder not found"
-          fi
+          rm -rf downloads
           echo "# 📥 Telegram Downloader" > README.md
           echo "" >> README.md
           echo "دانلود خودکار پست‌های تلگرام" >> README.md
           echo "" >> README.md
           echo "---" >> README.md
           echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          echo "✅ Reset README.md"
+          echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: temp_files_only
         if: github.event.inputs.clean_mode == 'temp_files_only'
         run: |
           echo "🧹 Cleaning temporary files only..."
-          rm -rf /tmp/telegram_downloads 2>/dev/null || true
-          rm -rf /tmp/download_backup_* 2>/dev/null || true
-          rm -rf /tmp/zip_temp_* 2>/dev/null || true
-          rm -f /tmp/all_post_dirs.txt 2>/dev/null || true
-          rm -f /tmp/backup_dir_path.txt 2>/dev/null || true
-          echo "✅ Removed temp files"
-          rm -f *.zip 2>/dev/null || true
-          rm -f *.z[0-9]* 2>/dev/null || true
-          echo "✅ Removed orphan zip files"
+          rm -rf /tmp/telegram_downloads
+          rm -f /tmp/all_post_dirs.txt
+          rm -f /tmp/backup_dir_path.txt
+          rm -f *.zip
+          rm -f *.z[0-9]*
+          echo "✅ Cleanup completed"
 
       - name: Cleanup Mode: keep_last_5
         if: github.event.inputs.clean_mode == 'keep_last_5'
         run: |
           echo "🧹 Keeping only last 5 downloads..."
           if [ -d "downloads" ]; then
-            FOLDERS=($(ls -dt downloads/*/ 2>/dev/null | head -5))
-            TOTAL_FOLDERS=$(ls -d downloads/*/ 2>/dev/null | wc -l)
-            echo "📁 Total folders: $TOTAL_FOLDERS"
-            if [ $TOTAL_FOLDERS -gt 5 ]; then
-              echo "📁 Keeping 5 most recent folders"
-              for FOLDER in downloads/*/; do
-                KEEP=0
-                for KEEP_FOLDER in "${FOLDERS[@]}"; do
-                  if [ "$FOLDER" == "$KEEP_FOLDER" ]; then
-                    KEEP=1
-                    break
-                  fi
-                done
-                if [ $KEEP -eq 0 ]; then
-                  echo "  🗑️ Removing: $(basename "$FOLDER")"
-                  rm -rf "$FOLDER"
-                fi
+            TOTAL=$(ls -1 downloads/ | wc -l)
+            echo "Total folders: $TOTAL"
+            if [ $TOTAL -gt 5 ]; then
+              TO_DELETE=$((TOTAL - 5))
+              ls -1t downloads/ | tail -$TO_DELETE | while read folder; do
+                echo "  🗑️ Removing: $folder"
+                rm -rf "downloads/$folder"
               done
             else
-              echo "✅ Total folders ($TOTAL_FOLDERS) is less than or equal to 5, nothing to delete"
+              echo "Total folders ($TOTAL) is 5 or less, nothing to delete"
             fi
           else
-            echo "⚠️ downloads folder not found"
+            echo "downloads folder not found"
           fi
 
       - name: Cleanup Mode: keep_last_10
@@ -134,29 +107,19 @@ jobs:
         run: |
           echo "🧹 Keeping only last 10 downloads..."
           if [ -d "downloads" ]; then
-            FOLDERS=($(ls -dt downloads/*/ 2>/dev/null | head -10))
-            TOTAL_FOLDERS=$(ls -d downloads/*/ 2>/dev/null | wc -l)
-            echo "📁 Total folders: $TOTAL_FOLDERS"
-            if [ $TOTAL_FOLDERS -gt 10 ]; then
-              echo "📁 Keeping 10 most recent folders"
-              for FOLDER in downloads/*/; do
-                KEEP=0
-                for KEEP_FOLDER in "${FOLDERS[@]}"; do
-                  if [ "$FOLDER" == "$KEEP_FOLDER" ]; then
-                    KEEP=1
-                    break
-                  fi
-                done
-                if [ $KEEP -eq 0 ]; then
-                  echo "  🗑️ Removing: $(basename "$FOLDER")"
-                  rm -rf "$FOLDER"
-                fi
+            TOTAL=$(ls -1 downloads/ | wc -l)
+            echo "Total folders: $TOTAL"
+            if [ $TOTAL -gt 10 ]; then
+              TO_DELETE=$((TOTAL - 10))
+              ls -1t downloads/ | tail -$TO_DELETE | while read folder; do
+                echo "  🗑️ Removing: $folder"
+                rm -rf "downloads/$folder"
               done
             else
-              echo "✅ Total folders ($TOTAL_FOLDERS) is less than or equal to 10, nothing to delete"
+              echo "Total folders ($TOTAL) is 10 or less, nothing to delete"
             fi
           else
-            echo "⚠️ downloads folder not found"
+            echo "downloads folder not found"
           fi
 
       - name: Update README after cleanup
@@ -168,14 +131,12 @@ jobs:
           if [ -d "downloads" ] && [ "$(ls -A downloads 2>/dev/null)" ]; then
             echo "## 📁 Downloads" >> README.md
             echo "" >> README.md
-            echo "| # | Post | Size |" >> README.md
-            echo "|---|------|------|" >> README.md
             COUNTER=1
-            for DIR in downloads/*/; do
+            for DIR in downloads/*; do
               if [ -d "$DIR" ]; then
                 FOLDER_NAME=$(basename "$DIR")
                 SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
-                echo "| ${COUNTER} | [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) | ${SIZE} |" >> README.md
+                echo "${COUNTER}. [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) - ${SIZE}" >> README.md
                 COUNTER=$((COUNTER + 1))
               fi
             done
@@ -185,38 +146,17 @@ jobs:
           echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
           echo "✅ README.md updated"
 
-      - name: Show disk space after cleanup
-        run: |
-          echo ""
-          echo "📊 Disk space after cleanup:"
-          df -h /
-          echo ""
-          echo "📁 Remaining folders in downloads:"
-          if [ -d "downloads" ]; then
-            ls -la downloads/
-          else
-            echo "downloads folder does not exist"
-          fi
-
       - name: Commit and push changes
         run: |
-          BRANCH="${GITHUB_REF_NAME}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
           git add -A
           if ! git diff --cached --quiet; then
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
             MODE="${{ github.event.inputs.clean_mode }}"
             git commit -m "🧹 Cleanup: $MODE - $TIMESTAMP [skip ci]"
-            for i in 1 2 3 4 5; do
-              echo "Push attempt $i/5..."
-              if git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Push successful!"
-                break
-              else
-                echo "Push failed, retrying..."
-                sleep 5
-                git pull --rebase origin "$BRANCH" 2>/dev/null || true
-              fi
-            done
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "✅ Push successful!"
           else
             echo "No changes to commit"
           fi
