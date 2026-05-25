@@ -8,19 +8,6 @@ on:
         required: true
         type: string
         placeholder: 'https://t.me/username/123 https://t.me/username/456'
-      mode:
-        description: '📦 حالت دانلود'
-        required: false
-        default: 'normal'
-        type: choice
-        options:
-          - normal
-          - zip
-      password:
-        description: '🔒 رمز عبور برای فایل زیپ (اختیاری)'
-        required: false
-        default: ''
-        type: string
 
 jobs:
   save-file:
@@ -57,11 +44,9 @@ jobs:
           rm -rf ~/.npm
           rm -rf ~/.cargo
           rm -rf ~/.rustup
-
           echo ""
           echo "📊 Available disk space after cleanup:"
           df -h /
-
           AVAILABLE_GB=$(df --output=avail / | tail -n 1 | awk '{print int($1/1024/1024)}')
           if [ $AVAILABLE_GB -lt 5 ]; then
             echo "❌ Only ${AVAILABLE_GB}GB available! Not enough space."
@@ -116,16 +101,12 @@ jobs:
             echo "❌ download_telegram.js not found in repository!"
             exit 1
           fi
-
           sudo rm -rf /tmp/telegram_downloads
           mkdir -p /tmp/telegram_downloads
-
           export POST_URLS="${{ github.event.inputs.post_urls }}"
           node download_telegram.js
-
           if [ $? -eq 0 ] && [ -f "/tmp/all_post_dirs.txt" ] && [ -s "/tmp/all_post_dirs.txt" ]; then
             echo "✅ All downloads completed!"
-            echo "Contents of all_post_dirs.txt:"
             cat /tmp/all_post_dirs.txt
           else
             echo "❌ Download failed!"
@@ -149,25 +130,20 @@ jobs:
             if [ -z "$POST_DIR" ]; then
               continue
             fi
-
             if [ ! -d "$POST_DIR" ]; then
               echo "⚠️ Directory not found: $POST_DIR"
               continue
             fi
-
             echo "Processing directory: $POST_DIR"
             ls -la "$POST_DIR/"
-
             for FILE in "$POST_DIR"/*; do
               if [ -f "$FILE" ]; then
                 FILENAME=$(basename "$FILE")
                 if [[ "$FILENAME" != "post_info.json" ]] && [[ "$FILENAME" != "message_text.txt" ]] && [[ "$FILENAME" != "no_media.txt" ]]; then
                   if [ -s "$FILE" ]; then
                     cp "$FILE" "tmp_downloads/$FILENAME"
-                    echo "  ✅ Copied: $FILENAME ($(du -h "$FILE" | cut -f1))"
+                    echo "  ✅ Copied: $FILENAME"
                   fi
-                else
-                  echo "  ⏭️ Skipped metadata: $FILENAME"
                 fi
               fi
             done
@@ -175,7 +151,6 @@ jobs:
 
           if [ ! -d "tmp_downloads" ] || [ -z "$(ls -A tmp_downloads 2>/dev/null)" ]; then
             echo "❌ No files were copied to tmp_downloads!"
-            ls -la tmp_downloads/ 2>/dev/null || echo "tmp_downloads is empty"
             exit 1
           fi
 
@@ -185,14 +160,12 @@ jobs:
 
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
-
             SIZE=$(stat -c%s "$FILE")
             BASENAME=$(basename "$FILE")
             BASENAME_NO_EXT="${BASENAME%.*}"
             FOLDER_NAME="$BASENAME_NO_EXT"
             TARGET_DIR="$BACKUP_DIR/$FOLDER_NAME"
             mkdir -p "$TARGET_DIR"
-
             echo ""
             echo "Processing: $BASENAME ($(( SIZE / 1024 / 1024 ))MB)"
 
@@ -201,43 +174,21 @@ jobs:
               zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
               cd - > /dev/null
               rm -f "$FILE"
-
               PARTS_COUNT=$(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | wc -l)
               TOTAL_SIZE=0
               for PART in "$TARGET_DIR"/*; do
                 [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
               done
               TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
-
-              cat > "$TARGET_DIR/README.md" << EOF
-              # 📥 ${FOLDER_NAME}
-              
-              **Size:** ${TOTAL_SIZE_MB} MB
-              **Parts:** ${PARTS_COUNT}
-              
-              ## Download
-              Download all parts (.z01, .z02, ..., .zip) and extract the .zip file.
-              
-              *Created by [avasam.ir](https://avasam.ir)*
-              EOF
+              printf '# 📥 %s\n\n**Size:** %s MB\n**Parts:** %s\n\n## Download\nDownload all parts (.z01, .z02, ..., .zip) and extract the .zip file.\n\n*Created by [avasam.ir](https://avasam.ir)*\n' "$FOLDER_NAME" "$TOTAL_SIZE_MB" "$PARTS_COUNT" > "$TARGET_DIR/README.md"
               echo "  ✅ Created ${PARTS_COUNT} parts (${TOTAL_SIZE_MB}MB)"
             else
               cd "$TARGET_DIR"
               zip "${FOLDER_NAME}.zip" "$FILE" > /dev/null 2>&1
               cd - > /dev/null
               rm -f "$FILE"
-
               SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
-              cat > "$TARGET_DIR/README.md" << EOF
-              # 📥 ${FOLDER_NAME}
-              
-              **Size:** ${SIZE_MB} MB
-              
-              ## Download
-              Download ${FOLDER_NAME}.zip and extract.
-              
-              *Created by [avasam.ir](https://avasam.ir)*
-              EOF
+              printf '# 📥 %s\n\n**Size:** %s MB\n\n## Download\nDownload %s.zip and extract.\n\n*Created by [avasam.ir](https://avasam.ir)*\n' "$FOLDER_NAME" "$SIZE_MB" "$FOLDER_NAME" > "$TARGET_DIR/README.md"
               echo "  ✅ Created zip (${SIZE_MB}MB)"
             fi
           done
@@ -250,10 +201,8 @@ jobs:
       - name: Copy to downloads and update README
         run: |
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
-
           rm -rf downloads
           mkdir -p downloads
-
           if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
             for FOLDER in "$BACKUP_DIR"/*; do
               if [ -d "$FOLDER" ]; then
@@ -263,7 +212,6 @@ jobs:
               fi
             done
           fi
-
           echo ""
           echo "=== Final downloads structure ==="
           ls -la downloads/
@@ -271,48 +219,36 @@ jobs:
             echo "Contents of $(basename "$DIR"):"
             ls -la "$DIR"
           done
-
-          cat > README.md << 'EOF'
-          # 📥 Telegram Downloader
-          
-          دانلود خودکار پست‌های تلگرام
-          
-          ## 📁 Downloads
-          
-          EOF
-          
-                    for FOLDER in downloads/*/; do
-                      if [ -d "$FOLDER" ]; then
-                        FOLDER_NAME=$(basename "$FOLDER")
-                        SIZE=$(du -sh "$FOLDER" 2>/dev/null | cut -f1)
-                        echo "- **${FOLDER_NAME}** (${SIZE}) - [View](./downloads/${FOLDER_NAME}/)" >> README.md
-                      fi
-                    done
-          
-                    cat >> README.md << 'EOF'
-          
-          ---
-          *Created by [avasam.ir](https://avasam.ir)*
-          EOF
-
+          echo "# 📥 Telegram Downloader" > README.md
+          echo "" >> README.md
+          echo "دانلود خودکار پست‌های تلگرام" >> README.md
+          echo "" >> README.md
+          echo "## 📁 Downloads" >> README.md
+          echo "" >> README.md
+          for FOLDER in downloads/*/; do
+            if [ -d "$FOLDER" ]; then
+              FOLDER_NAME=$(basename "$FOLDER")
+              SIZE=$(du -sh "$FOLDER" 2>/dev/null | cut -f1)
+              echo "- **${FOLDER_NAME}** (${SIZE}) - [View](./downloads/${FOLDER_NAME}/)" >> README.md
+            fi
+          done
+          echo "" >> README.md
+          echo "---" >> README.md
+          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
           echo "✅ README files created"
 
       - name: Commit & Push
         run: |
           BRANCH="${GITHUB_REF_NAME}"
-
           if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
             echo "❌ No files to commit!"
             exit 1
           fi
-
           git add -f downloads/
           git add README.md
-
           if ! git diff --cached --quiet; then
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
             git commit -m "Download Telegram posts (split 45MB) - $TIMESTAMP [skip ci]"
-
             for i in 1 2 3 4 5; do
               echo "Push attempt $i/5..."
               if git push origin HEAD:"$BRANCH" 2>&1; then
@@ -329,7 +265,6 @@ jobs:
           else
             echo "No changes to commit"
           fi
-
           echo ""
           echo "=========================================="
           echo "✅ Process completed successfully!"
