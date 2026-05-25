@@ -12,7 +12,7 @@ const postUrlsInput = process.env.POST_URLS || process.env.POST_URL || "";
 const postUrls = postUrlsInput.split(/\s+/).filter(url => url.trim() && url.startsWith('http'));
 
 function sanitizeFilename(filename) {
-  return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
+  return filename.replace(/[<>:"|?*\\/()]/g, '_').replace(/\s+/g, '_');
 }
 
 async function extractChatAndMsgId(url) {
@@ -68,7 +68,9 @@ async function getOriginalFileName(media) {
   if (media.document && media.document.attributes) {
     for (const attr of media.document.attributes) {
       if (attr.className === 'DocumentAttributeFilename') {
-        return sanitizeFilename(attr.fileName);
+        let name = sanitizeFilename(attr.fileName);
+        name = name.replace(/[()]/g, '');
+        return name;
       }
     }
   }
@@ -140,6 +142,7 @@ async function downloadPost(client, postUrl) {
         } else {
           finalFileName = `${folderName}${ext}`;
         }
+        finalFileName = finalFileName.replace(/[()]/g, '');
         const finalPath = path.join(postDir, finalFileName);
         fs.renameSync(tempPath, finalPath);
         console.log(`   ✅ Saved as: ${finalFileName}`);
