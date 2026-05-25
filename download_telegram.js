@@ -12,7 +12,7 @@ const postUrlsInput = process.env.POST_URLS || process.env.POST_URL || "";
 const postUrls = postUrlsInput.split(/\s+/).filter(url => url.trim() && url.startsWith('http'));
 
 function sanitizeFilename(filename) {
-  return filename.replace(/[<>:"|?*\\/()]/g, '_').replace(/\s+/g, '_');
+  return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
 }
 
 async function extractChatAndMsgId(url) {
@@ -99,13 +99,16 @@ async function downloadPost(client, postUrl) {
   console.log(`\n${'='.repeat(50)}`);
   console.log(`📌 Processing: ${postUrl}`);
   console.log(`${'='.repeat(50)}`);
+  
   const { chatId, msgId } = await extractChatAndMsgId(postUrl);
+  
   let chat;
   if (chatId.toString().startsWith('-100')) {
     chat = await client.getEntity(parseInt(chatId));
   } else {
     chat = await client.getEntity(chatId);
   }
+  
   let channelName = "unknown_channel";
   if (chat.username) {
     channelName = chat.username;
@@ -114,20 +117,27 @@ async function downloadPost(client, postUrl) {
   } else {
     channelName = chatId.toString().replace('-100', '');
   }
+  
   const messages = await client.getMessages(chat, { ids: msgId });
   const message = messages[0];
+  
   if (!message) {
     throw new Error(`Message ${msgId} not found`);
   }
+  
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Post ID: ${msgId}`);
+  
+  // پوشه به نام channel_postid
   const folderName = `${channelName}_${msgId}`;
   const postDir = `/tmp/telegram_downloads/${folderName}`;
   fs.mkdirSync(postDir, { recursive: true });
+  
   if (message.media) {
     console.log(`📥 Downloading media...`);
     let originalFileName = await getOriginalFileName(message.media);
     const tempPath = path.join(postDir, 'temp_download');
+    
     try {
       await downloadMediaFile(client, message.media, tempPath, originalFileName || 'media');
       if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
@@ -153,6 +163,7 @@ async function downloadPost(client, postUrl) {
   } else {
     console.log(`⚠️ No media in this post`);
   }
+  
   console.log(`📁 Saved to: ${postDir}`);
   return postDir;
 }
