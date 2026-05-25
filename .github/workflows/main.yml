@@ -213,8 +213,9 @@ jobs:
             ls -la "$DIR"
           done
 
-      - name: Copy to downloads and update README
+      - name: Incremental Commit & Push (Batch by Batch)
         run: |
+          BRANCH="${GITHUB_REF_NAME}"
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
           
           mkdir -p downloads
@@ -230,65 +231,116 @@ jobs:
             done
           fi
           
+          # Create list of all folders
+          FOLDERS=($(find downloads -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort))
+          TOTAL_FOLDERS=${#FOLDERS[@]}
+          
+          if [ $TOTAL_FOLDERS -eq 0 ]; then
+            echo "❌ No folders found!"
+            exit 1
+          fi
+          
+          echo "📁 Total folders to push: $TOTAL_FOLDERS"
+          
+          # Push in batches of 3
+          BATCH_SIZE=3
+          for ((i=0; i<TOTAL_FOLDERS; i+=BATCH_SIZE)); do
+            BATCH_END=$((i + BATCH_SIZE))
+            if [ $BATCH_END -gt $TOTAL_FOLDERS ]; then
+              BATCH_END=$TOTAL_FOLDERS
+            fi
+            
+            echo ""
+            echo "=========================================="
+            echo "📤 Pushing batch $((i/BATCH_SIZE + 1)) (folders $((i+1)) to $BATCH_END)"
+            echo "=========================================="
+            
+            # Git fetch and reset to latest
+            git fetch origin "$BRANCH" --quiet 2>/dev/null || true
+            git reset --hard origin/"$BRANCH" 2>/dev/null || true
+            
+            # Copy all folders to downloads (to ensure we have all)
+            if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+              for FOLDER in "$BACKUP_DIR"/*; do
+                if [ -d "$FOLDER" ]; then
+                  FOLDER_NAME=$(basename "$FOLDER")
+                  rm -rf "downloads/$FOLDER_NAME"
+                  cp -r "$FOLDER" "downloads/$FOLDER_NAME"
+                fi
+              done
+            fi
+            
+            # Add files in this batch
+            for ((j=i; j<BATCH_END; j++)); do
+              FOLDER_NAME="${FOLDERS[$j]}"
+              if [ -d "downloads/$FOLDER_NAME" ]; then
+                git add -f "downloads/$FOLDER_NAME/"
+                echo "  ✅ Added: $FOLDER_NAME"
+              fi
+            done
+            
+            # Update root README
+            echo "# 📥 Telegram Downloader" > README.md
+            echo "" >> README.md
+            echo "دانلود خودکار پست‌های تلگرام" >> README.md
+            echo "" >> README.md
+            echo "## 📁 Downloads" >> README.md
+            echo "" >> README.md
+            echo "| # | Post | Size |" >> README.md
+            echo "|---|------|------|" >> README.md
+            
+            COUNTER=1
+            for DIR in downloads/*/; do
+              if [ -d "$DIR" ]; then
+                FOLDER_NAME=$(basename "$DIR")
+                SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
+                echo "| ${COUNTER} | [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) | ${SIZE} |" >> README.md
+                COUNTER=$((COUNTER + 1))
+              fi
+            done
+            
+            echo "" >> README.md
+            echo "---" >> README.md
+            echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
+            
+            git add README.md
+            
+            # Commit and push this batch
+            if ! git diff --cached --quiet; then
+              TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+              git commit -m "Add batch $((i/BATCH_SIZE + 1)): folders $((i+1))-$BATCH_END - $TIMESTAMP [skip ci]"
+              
+              # Push with retry
+              for attempt in 1 2 3 4 5; do
+                echo "  Push attempt $attempt/5..."
+                if git push origin HEAD:"$BRANCH" 2>&1; then
+                  echo "  ✅ Batch pushed successfully!"
+                  break
+                else
+                  echo "  Push failed, retrying..."
+                  sleep 10
+                  git pull --rebase origin "$BRANCH" 2>/dev/null || true
+                  git add -f downloads/
+                  git add README.md
+                fi
+              done
+            else
+              echo "  ℹ️ No changes in this batch"
+            fi
+            
+            # Wait a bit between batches
+            sleep 5
+          done
+          
           echo ""
           echo "=== Final downloads structure ==="
           ls -la downloads/
           for DIR in downloads/*/; do
             echo "Contents of $(basename "$DIR"):"
-            ls -la "$DIR"
+            ls -la "$DIR" | head -10
           done
           
-          echo "# 📥 Telegram Downloader" > README.md
-          echo "" >> README.md
-          echo "دانلود خودکار پست‌های تلگرام" >> README.md
-          echo "" >> README.md
-          echo "## 📁 Downloads" >> README.md
-          echo "" >> README.md
-          
-          for DIR in downloads/*/; do
-            if [ -d "$DIR" ]; then
-              FOLDER_NAME=$(basename "$DIR")
-              SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
-              echo "- **${FOLDER_NAME}** (${SIZE}) - [View](./downloads/${FOLDER_NAME}/)" >> README.md
-            fi
-          done
-          
-          echo "" >> README.md
-          echo "---" >> README.md
-          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
-          
-          echo "✅ README files created"
-
-      - name: Commit & Push
-        run: |
-          BRANCH="${GITHUB_REF_NAME}"
-          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
-            echo "❌ No files to commit!"
-            exit 1
-          fi
-          git add -f downloads/
-          git add README.md
-          if ! git diff --cached --quiet; then
-            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            git commit -m "Download Telegram posts (split 45MB) - $TIMESTAMP [skip ci]"
-            for i in 1 2 3 4 5; do
-              echo "Push attempt $i/5..."
-              if git push origin HEAD:"$BRANCH" 2>&1; then
-                echo "✅ Push successful!"
-                break
-              else
-                echo "Push failed, retrying..."
-                sleep 10
-                git pull --rebase origin "$BRANCH" 2>/dev/null || true
-                git add -f downloads/
-                git add README.md
-              fi
-            done
-          else
-            echo "No changes to commit"
-          fi
           echo ""
           echo "=========================================="
-          echo "✅ Process completed successfully!"
-          echo "📁 Files are stored in the 'downloads' folder"
+          echo "✅ All batches pushed successfully!"
           echo "=========================================="
