@@ -7,7 +7,7 @@ const { execSync } = require("child_process");
 const apiId = parseInt(process.env.API_ID);
 const apiHash = process.env.API_HASH;
 const stringSession = process.env.STRING_SESSION;
-const postUrl = process.env.POST_URL;  // فقط یک لینک در هر اجرا
+const postUrl = process.env.POST_URL;
 
 function sanitizeFilename(filename) {
   return filename.replace(/[<>:"|?*\\/]/g, '_').replace(/\s+/g, '_');
@@ -60,23 +60,12 @@ async function downloadMediaFile(client, media, outputPath, fileName) {
         console.log(`   ✅ Downloaded: ${fileName} (${(fs.statSync(filePath).size/1024/1024).toFixed(2)}MB)`);
         resolve(filePath);
       } else {
-        reject(new Error("Download failed or file empty"));
+        reject(new Error("Download failed"));
       }
     } catch (err) {
       reject(err);
     }
   });
-}
-
-async function getFileNameFromMedia(media) {
-  if (media.document && media.document.attributes) {
-    for (const attr of media.document.attributes) {
-      if (attr.className === 'DocumentAttributeFilename') {
-        return sanitizeFilename(attr.fileName);
-      }
-    }
-  }
-  return null;
 }
 
 async function downloadPost(client, postUrl) {
@@ -106,18 +95,18 @@ async function downloadPost(client, postUrl) {
   const message = messages[0];
   
   if (!message) {
-    throw new Error(`Message ${msgId} not found in ${channelName}`);
+    throw new Error(`Message ${msgId} not found`);
   }
   
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Message ID: ${msgId}`);
   
+  // استفاده از مسیر موقت که بعداً توسط کد اصلی پردازش می‌شه
   const postDir = `/tmp/telegram_downloads/${channelName}/${msgId}`;
   fs.mkdirSync(postDir, { recursive: true });
   
   const downloadedFiles = [];
   
-  // Save message text
   if (message.text && message.text.length > 0) {
     const textFile = path.join(postDir, 'message_text.txt');
     fs.writeFileSync(textFile, message.text);
@@ -125,11 +114,18 @@ async function downloadPost(client, postUrl) {
     console.log(`📝 Saved text (${message.text.length} chars)`);
   }
   
-  // Download media
   if (message.media) {
     console.log(`📥 Downloading media...`);
     
-    let fileName = await getFileNameFromMedia(message.media);
+    let fileName = null;
+    if (message.media.document && message.media.document.attributes) {
+      for (const attr of message.media.document.attributes) {
+        if (attr.className === 'DocumentAttributeFilename') {
+          fileName = sanitizeFilename(attr.fileName);
+          break;
+        }
+      }
+    }
     
     if (!fileName) {
       const mediaType = message.media.className;
@@ -156,7 +152,7 @@ async function downloadPost(client, postUrl) {
           'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
           'image/webp': '.webp',
           'application/pdf': '.pdf', 'application/zip': '.zip',
-          'application/x-rar': '.rar', 'application/x-7z-compressed': '.7z'
+          'application/x-rar': '.rar'
         };
         const ext = extMap[fileType] || '';
         
@@ -173,30 +169,9 @@ async function downloadPost(client, postUrl) {
     } catch (err) {
       console.error(`   ❌ Download error: ${err.message}`);
     }
-  } else {
-    console.log(`⚠️ No media in this post`);
   }
   
-  // Save post info
-  const totalSize = downloadedFiles.reduce((sum, f) => {
-    try { return sum + fs.statSync(f).size; } catch { return sum; }
-  }, 0);
-  
-  const infoFile = path.join(postDir, 'post_info.json');
-  fs.writeFileSync(infoFile, JSON.stringify({
-    url: postUrl,
-    channel: channelName,
-    postId: msgId,
-    date: message.date,
-    files: downloadedFiles.map(f => path.basename(f)),
-    totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
-    hasMedia: !!message.media,
-    hasText: !!(message.text && message.text.length > 0)
-  }, null, 2));
-  
-  console.log(`📊 Summary: ${downloadedFiles.length} file(s), ${(totalSize/1024/1024).toFixed(2)}MB`);
   console.log(`📁 Saved to: ${postDir}`);
-  
   return postDir;
 }
 
@@ -222,22 +197,18 @@ async function main() {
     
     const postDir = await downloadPost(client, postUrl);
     
-    // Save the directory path
-    fs.writeFileSync('/tmp/downloaded_post_dir.txt', postDir);
+    // ذخیره مسیر برای استفاده در مرحله بعد
+    const outputFile = process.env.OUTPUT_FILE || '/tmp/downloaded_post_dir.txt';
+    fs.writeFileSync(outputFile, postDir);
     
-    console.log(`\n${'='.repeat(50)}`);
-    console.log(`✅ Download completed!`);
-    console.log(`${'='.repeat(50)}`);
+    console.log(`\n✅ Download completed!`);
     
   } catch (error) {
-    console.error('❌ Fatal error:', error.message);
+    console.error('❌ Error:', error.message);
     process.exit(1);
   } finally {
     if (client) await client.disconnect();
   }
 }
 
-main().catch(err => {
-  console.error('Error:', err.message);
-  process.exit(1);
-});
+main();
