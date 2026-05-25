@@ -141,6 +141,7 @@ jobs:
                 FILENAME=$(basename "$FILE")
                 if [[ "$FILENAME" != "post_info.json" ]] && [[ "$FILENAME" != "message_text.txt" ]] && [[ "$FILENAME" != "no_media.txt" ]]; then
                   if [ -s "$FILE" ]; then
+                    # Remove special characters from filename
                     SAFE_NAME=$(echo "$FILENAME" | sed 's/[()]//g')
                     cp "$FILE" "tmp_downloads/$SAFE_NAME"
                     echo "  ✅ Copied: $SAFE_NAME"
@@ -161,26 +162,35 @@ jobs:
 
           for FILE in tmp_downloads/*; do
             [ -f "$FILE" ] || continue
-            SIZE=$(stat -c%s "$FILE")
-            BASENAME=$(basename "$FILE")
+            
+            # Get absolute path
+            FILE_PATH=$(realpath "$FILE")
+            SIZE=$(stat -c%s "$FILE_PATH")
+            BASENAME=$(basename "$FILE_PATH")
             BASENAME_NO_EXT="${BASENAME%.*}"
             FOLDER_NAME="$BASENAME_NO_EXT"
             TARGET_DIR="$BACKUP_DIR/$FOLDER_NAME"
             mkdir -p "$TARGET_DIR"
+            
             echo ""
             echo "Processing: $BASENAME ($(( SIZE / 1024 / 1024 ))MB)"
 
             if [ "$SIZE" -gt $(( SPLIT_THRESHOLD_MB * 1024 * 1024 )) ]; then
+              echo "  Splitting into ${SPLIT_THRESHOLD_MB}MB parts..."
               cd "$TARGET_DIR"
-              zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE"
-              if [ $? -eq 0 ]; then
-                rm -f "$FILE"
+              zip -s ${SPLIT_THRESHOLD_MB}m "${FOLDER_NAME}.zip" "$FILE_PATH"
+              ZIP_RESULT=$?
+              cd - > /dev/null
+              
+              if [ $ZIP_RESULT -eq 0 ]; then
+                rm -f "$FILE_PATH"
                 PARTS_COUNT=$(ls -1 "$TARGET_DIR"/*.zip "$TARGET_DIR"/*.z[0-9]* 2>/dev/null | wc -l)
                 TOTAL_SIZE=0
                 for PART in "$TARGET_DIR"/*; do
                   [ -f "$PART" ] && TOTAL_SIZE=$((TOTAL_SIZE + $(stat -c%s "$PART" 2>/dev/null || echo 0)))
                 done
                 TOTAL_SIZE_MB=$(echo "scale=2; $TOTAL_SIZE / 1024 / 1024" | bc)
+                
                 echo "# 📥 ${FOLDER_NAME}" > "$TARGET_DIR/README.md"
                 echo "" >> "$TARGET_DIR/README.md"
                 echo "**Size:** ${TOTAL_SIZE_MB} MB" >> "$TARGET_DIR/README.md"
@@ -192,15 +202,19 @@ jobs:
                 echo "*Created by [avasam.ir](https://avasam.ir)*" >> "$TARGET_DIR/README.md"
                 echo "  ✅ Created ${PARTS_COUNT} parts (${TOTAL_SIZE_MB}MB)"
               else
-                echo "  ❌ Zip failed for $BASENAME"
+                echo "  ❌ Zip failed with error code: $ZIP_RESULT"
               fi
-              cd - > /dev/null
             else
+              echo "  Creating single zip..."
               cd "$TARGET_DIR"
-              zip "${FOLDER_NAME}.zip" "$FILE"
-              if [ $? -eq 0 ]; then
-                rm -f "$FILE"
+              zip "${FOLDER_NAME}.zip" "$FILE_PATH"
+              ZIP_RESULT=$?
+              cd - > /dev/null
+              
+              if [ $ZIP_RESULT -eq 0 ]; then
+                rm -f "$FILE_PATH"
                 SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+                
                 echo "# 📥 ${FOLDER_NAME}" > "$TARGET_DIR/README.md"
                 echo "" >> "$TARGET_DIR/README.md"
                 echo "**Size:** ${SIZE_MB} MB" >> "$TARGET_DIR/README.md"
@@ -211,9 +225,8 @@ jobs:
                 echo "*Created by [avasam.ir](https://avasam.ir)*" >> "$TARGET_DIR/README.md"
                 echo "  ✅ Created zip (${SIZE_MB}MB)"
               else
-                echo "  ❌ Zip failed for $BASENAME"
+                echo "  ❌ Zip failed with error code: $ZIP_RESULT"
               fi
-              cd - > /dev/null
             fi
           done
 
@@ -221,6 +234,10 @@ jobs:
           echo ""
           echo "=== Backup folder contents ==="
           ls -la "$BACKUP_DIR/"
+          for DIR in "$BACKUP_DIR"/*/; do
+            echo "Contents of $(basename "$DIR"):"
+            ls -la "$DIR"
+          done
 
       - name: Copy to downloads and update README
         run: |
