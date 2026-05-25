@@ -2,23 +2,6 @@ name: 🧹 Cleanup Repository
 
 on:
   workflow_dispatch:
-    inputs:
-      clean_mode:
-        description: 'حالت پاکسازی'
-        required: false
-        default: 'all'
-        type: choice
-        options:
-          - all
-          - downloads_only
-          - temp_files_only
-          - keep_last_5
-          - keep_last_10
-      confirm:
-        description: 'برای تایید حذف YES را وارد کنید'
-        required: true
-        type: string
-        default: 'NO'
 
 jobs:
   cleanup:
@@ -26,89 +9,56 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check confirmation
-        run: |
-          if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
-            echo "Operation cancelled. Please enter YES to confirm deletion."
-            exit 1
-          fi
-          echo "Confirmation received. Starting cleanup..."
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Cleanup all
-        if: github.event.inputs.clean_mode == 'all'
+      - name: Clean everything
         run: |
+          echo "🧹 Starting cleanup..."
+          
+          # حذف پوشه downloads
           rm -rf downloads
+          echo "✅ Removed downloads folder"
+          
+          # حذف فایل‌های موقت
           rm -rf /tmp/telegram_downloads
+          rm -f /tmp/all_post_dirs.txt
+          rm -f /tmp/backup_dir_path.txt
+          echo "✅ Removed temp files"
+          
+          # حذف فایل‌های زیپ در ریشه
           rm -f *.zip
           rm -f *.z[0-9]*
+          echo "✅ Removed zip files"
+          
+          # بازنشانی README
           echo "# Telegram Downloader" > README.md
+          echo "" >> README.md
+          echo "دانلود خودکار پست‌های تلگرام" >> README.md
           echo "" >> README.md
           echo "---" >> README.md
           echo "Created by avasam.ir" >> README.md
+          echo "✅ Reset README.md"
+          
+          echo "🧹 Cleanup completed!"
 
-      - name: Cleanup downloads only
-        if: github.event.inputs.clean_mode == 'downloads_only'
-        run: |
-          rm -rf downloads
-          echo "# Telegram Downloader" > README.md
-          echo "" >> README.md
-          echo "---" >> README.md
-          echo "Created by avasam.ir" >> README.md
-
-      - name: Cleanup temp files only
-        if: github.event.inputs.clean_mode == 'temp_files_only'
-        run: |
-          rm -rf /tmp/telegram_downloads
-          rm -f *.zip
-          rm -f *.z[0-9]*
-
-      - name: Keep last 5
-        if: github.event.inputs.clean_mode == 'keep_last_5'
-        run: |
-          if [ -d "downloads" ]; then
-            cd downloads
-            ls -1t | tail -n +6 | xargs -r rm -rf
-            cd ..
-          fi
-
-      - name: Keep last 10
-        if: github.event.inputs.clean_mode == 'keep_last_10'
-        run: |
-          if [ -d "downloads" ]; then
-            cd downloads
-            ls -1t | tail -n +11 | xargs -r rm -rf
-            cd ..
-          fi
-
-      - name: Update README
-        run: |
-          if [ -d "downloads" ] && [ "$(ls -A downloads 2>/dev/null)" ]; then
-            echo "# Telegram Downloader" > README.md
-            echo "" >> README.md
-            echo "## Downloads" >> README.md
-            echo "" >> README.md
-            for dir in downloads/*; do
-              if [ -d "$dir" ]; then
-                name=$(basename "$dir")
-                size=$(du -sh "$dir" | cut -f1)
-                echo "- [$name](./downloads/$name/) - $size" >> README.md
-              fi
-            done
-            echo "" >> README.md
-            echo "---" >> README.md
-            echo "Created by avasam.ir" >> README.md
-          fi
-
-      - name: Commit and push
+      - name: Commit and push changes
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add -A
-          git diff --cached --quiet || git commit -m "Cleanup repository [skip ci]"
-          git push origin HEAD:"${GITHUB_REF_NAME}" || true
+          if ! git diff --cached --quiet; then
+            git commit -m "🧹 Cleanup repository [skip ci]"
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "✅ Push successful!"
+          else
+            echo "No changes to commit"
+          fi
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Cleanup completed successfully!"
+          echo "=========================================="
