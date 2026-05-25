@@ -71,6 +71,18 @@ async function downloadMediaFile(client, media, outputPath, fileName) {
   });
 }
 
+async function getOriginalFileName(media) {
+  // تلاش برای دریافت نام اصلی فایل
+  if (media.document && media.document.attributes) {
+    for (const attr of media.document.attributes) {
+      if (attr.className === 'DocumentAttributeFilename') {
+        return sanitizeFilename(attr.fileName);
+      }
+    }
+  }
+  return null;
+}
+
 async function getFileExtension(filePath) {
   try {
     const fileType = execSync(`file --mime-type -b "${filePath}"`).toString().trim();
@@ -122,30 +134,49 @@ async function downloadPost(client, postUrl) {
   console.log(`✅ Channel: ${channelName}`);
   console.log(`✅ Post ID: ${msgId}`);
   
-  const baseFileName = `${channelName}_${msgId}`;
-  const postDir = `/tmp/telegram_downloads/${baseFileName}`;
+  // پوشه به نام کانال_شماره پست
+  const folderName = `${channelName}_${msgId}`;
+  const postDir = `/tmp/telegram_downloads/${folderName}`;
   fs.mkdirSync(postDir, { recursive: true });
   
   const downloadedFiles = [];
   
+  // ذخیره متن پست (اختیاری)
   if (message.text && message.text.length > 0) {
-    const textFile = path.join(postDir, `${baseFileName}_message.txt`);
+    const textFile = path.join(postDir, 'message_text.txt');
     fs.writeFileSync(textFile, message.text);
     downloadedFiles.push(textFile);
     console.log(`📝 Saved text (${message.text.length} chars)`);
   }
   
+  // دانلود مدیا
   if (message.media) {
     console.log(`📥 Downloading media...`);
     
+    // تلاش برای دریافت نام اصلی فایل
+    let originalFileName = await getOriginalFileName(message.media);
     const tempPath = path.join(postDir, 'temp_download');
     
     try {
-      await downloadMediaFile(client, message.media, tempPath, baseFileName);
+      await downloadMediaFile(client, message.media, tempPath, originalFileName || 'media');
       
       if (fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0) {
+        // تشخیص پسوند فایل
         const ext = await getFileExtension(tempPath);
-        const finalFileName = ext ? `${baseFileName}${ext}` : baseFileName;
+        
+        let finalFileName;
+        if (originalFileName) {
+          // اگر نام اصلی داشت، همان نام را با پسوند مناسب استفاده کن
+          if (!originalFileName.match(/\.[^.]*$/)) {
+            finalFileName = originalFileName + ext;
+          } else {
+            finalFileName = originalFileName;
+          }
+        } else {
+          // اگر نام اصلی نداشت، از نام کانال_شماره استفاده کن
+          finalFileName = `${folderName}${ext}`;
+        }
+        
         const finalPath = path.join(postDir, finalFileName);
         fs.renameSync(tempPath, finalPath);
         downloadedFiles.push(finalPath);
@@ -156,7 +187,7 @@ async function downloadPost(client, postUrl) {
     }
   } else {
     console.log(`⚠️ No media in this post`);
-    const infoFile = path.join(postDir, `${baseFileName}_no_media.txt`);
+    const infoFile = path.join(postDir, 'no_media.txt');
     fs.writeFileSync(infoFile, `No media found in post ${msgId}\nURL: ${postUrl}`);
     downloadedFiles.push(infoFile);
   }
@@ -165,13 +196,12 @@ async function downloadPost(client, postUrl) {
     try { return sum + fs.statSync(f).size; } catch { return sum; }
   }, 0);
   
-  const infoFile = path.join(postDir, `${baseFileName}_info.json`);
+  const infoFile = path.join(postDir, 'post_info.json');
   fs.writeFileSync(infoFile, JSON.stringify({
     url: postUrl,
     channel: channelName,
     postId: msgId,
-    fileName: baseFileName,
-    date: message.date,
+    folderName: folderName,
     files: downloadedFiles.map(f => path.basename(f)),
     totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
     hasMedia: !!message.media,
@@ -213,7 +243,8 @@ async function main() {
       downloadedDirs.push(postDir);
     }
     
-    fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n'));
+    // ذخیره مسیرها با newline در انتها
+    fs.writeFileSync('/tmp/all_post_dirs.txt', downloadedDirs.join('\n') + '\n');
     
     console.log(`\n${'='.repeat(50)}`);
     console.log(`✅ All downloads completed! (${downloadedDirs.length} posts)`);
