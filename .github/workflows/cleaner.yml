@@ -1,49 +1,253 @@
-name: 🧹 Clean All Files
+name: 🧹 Cleanup Repository
 
 on:
   workflow_dispatch:
+    inputs:
+      clean_mode:
+        description: '🧹 حالت پاکسازی'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - downloads_only
+          - temp_files_only
+          - keep_last_5
+          - keep_last_10
+      confirm:
+        description: '✅ برای تایید حذف "YES" را وارد کنید'
+        required: true
+        type: string
+        default: 'NO'
 
 jobs:
-  clean-all:
+  cleanup:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout
+      - name: Check confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "YES" ]; then
+            echo "❌ Operation cancelled. Please enter 'YES' to confirm deletion."
+            exit 1
+          fi
+          echo "✅ Confirmation received. Starting cleanup..."
+
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Configure Git
+      - name: Cleanup Mode: all
+        if: github.event.inputs.clean_mode == 'all'
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          echo "🧹 Cleaning ALL downloads and temporary files..."
+          
+          # حذف پوشه downloads
+          rm -rf downloads/
+          echo "✅ Removed downloads folder"
+          
+          # حذف فایل‌های موقت
+          rm -rf /tmp/telegram_downloads
+          rm -rf /tmp/download_backup_*
+          rm -rf /tmp/zip_temp_*
+          rm -f /tmp/all_post_dirs.txt
+          rm -f /tmp/backup_dir_path.txt
+          echo "✅ Removed temp files"
+          
+          # حذف فایل‌های زیپ قدیمی در ریشه
+          rm -f *.zip
+          rm -f *.z[0-9]*
+          echo "✅ Removed orphan zip files"
+          
+          # بازنشانی README
+          cat > README.md << 'EOF'
+          # 📥 Telegram Downloader
+          
+          دانلود خودکار پست‌های تلگرام
+          
+          ---
+          *Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          echo "✅ Reset README.md"
 
-      - name: Clean downloads folder completely
+      - name: Cleanup Mode: downloads_only
+        if: github.event.inputs.clean_mode == 'downloads_only'
         run: |
-          echo "🧹 Cleaning downloads folder..."
+          echo "🧹 Cleaning downloads folder only..."
+          rm -rf downloads/
+          echo "✅ Removed downloads folder"
           
-          # اطمینان از وجود پوشه downloads
-          mkdir -p downloads
+          # به روز رسانی README
+          cat > README.md << 'EOF'
+          # 📥 Telegram Downloader
           
-          # حذف تمام فایل‌ها و پوشه‌های داخل downloads
-          rm -rf downloads/*
+          دانلود خودکار پست‌های تلگرام
           
-          # حذف فایل‌های مخفی داخل downloads (اگر وجود داشته باشند)
-          shopt -s dotglob nullglob
-          rm -rf downloads/.* 2>/dev/null || true
-          
-          echo "✅ Downloads folder is now empty"
-          ls -la downloads/
+          ---
+          *Created by [avasam.ir](https://avasam.ir)*
+          EOF
+          echo "✅ Reset README.md"
 
-      - name: Commit and push
+      - name: Cleanup Mode: temp_files_only
+        if: github.event.inputs.clean_mode == 'temp_files_only'
         run: |
-          git add downloads/
-          git commit -m "Clean all files from downloads folder [skip ci]" || echo "No changes to commit"
-          git push origin HEAD:"${GITHUB_REF_NAME}" || true
+          echo "🧹 Cleaning temporary files only..."
+          
+          # حذف فایل‌های موقت
+          rm -rf /tmp/telegram_downloads
+          rm -rf /tmp/download_backup_*
+          rm -rf /tmp/zip_temp_*
+          rm -f /tmp/all_post_dirs.txt
+          rm -f /tmp/backup_dir_path.txt
+          echo "✅ Removed temp files"
+          
+          # حذف فایل‌های زیپ موقت در ریشه
+          rm -f *.zip
+          rm -f *.z[0-9]*
+          echo "✅ Removed orphan zip files"
 
-      - name: Done
+      - name: Cleanup Mode: keep_last_5
+        if: github.event.inputs.clean_mode == 'keep_last_5'
         run: |
-          echo "🎉 All files cleaned successfully!"
-          echo "📁 Downloads folder exists but is empty"
+          echo "🧹 Keeping only last 5 downloads..."
+          
+          if [ -d "downloads" ]; then
+            # لیست پوشه‌ها بر اساس تاریخ (جدیدترین اول)
+            FOLDERS=($(ls -dt downloads/*/ 2>/dev/null | head -n 5))
+            TOTAL_FOLDERS=$(ls -d downloads/*/ 2>/dev/null | wc -l)
+            
+            if [ $TOTAL_FOLDERS -gt 5 ]; then
+              echo "📁 Total folders: $TOTAL_FOLDERS"
+              echo "📁 Keeping: ${#FOLDERS[@]} folders"
+              
+              # حذف پوشه‌های قدیمی
+              for FOLDER in $(ls -d downloads/*/ 2>/dev/null); do
+                KEEP=false
+                for KEEP_FOLDER in "${FOLDERS[@]}"; do
+                  if [ "$FOLDER" == "$KEEP_FOLDER" ]; then
+                    KEEP=true
+                    break
+                  fi
+                done
+                if [ "$KEEP" = false ]; then
+                  rm -rf "$FOLDER"
+                  echo "  🗑️ Removed: $(basename "$FOLDER")"
+                fi
+              done
+            else
+              echo "✅ Total folders (${TOTAL_FOLDERS}) is less than or equal to 5, nothing to delete"
+            fi
+          else
+            echo "⚠️ downloads folder not found"
+          fi
+
+      - name: Cleanup Mode: keep_last_10
+        if: github.event.inputs.clean_mode == 'keep_last_10'
+        run: |
+          echo "🧹 Keeping only last 10 downloads..."
+          
+          if [ -d "downloads" ]; then
+            # لیست پوشه‌ها بر اساس تاریخ (جدیدترین اول)
+            FOLDERS=($(ls -dt downloads/*/ 2>/dev/null | head -n 10))
+            TOTAL_FOLDERS=$(ls -d downloads/*/ 2>/dev/null | wc -l)
+            
+            if [ $TOTAL_FOLDERS -gt 10 ]; then
+              echo "📁 Total folders: $TOTAL_FOLDERS"
+              echo "📁 Keeping: ${#FOLDERS[@]} folders"
+              
+              # حذف پوشه‌های قدیمی
+              for FOLDER in $(ls -d downloads/*/ 2>/dev/null); do
+                KEEP=false
+                for KEEP_FOLDER in "${FOLDERS[@]}"; do
+                  if [ "$FOLDER" == "$KEEP_FOLDER" ]; then
+                    KEEP=true
+                    break
+                  fi
+                done
+                if [ "$KEEP" = false ]; then
+                  rm -rf "$FOLDER"
+                  echo "  🗑️ Removed: $(basename "$FOLDER")"
+                fi
+              done
+            else
+              echo "✅ Total folders (${TOTAL_FOLDERS}) is less than or equal to 10, nothing to delete"
+            fi
+          else
+            echo "⚠️ downloads folder not found"
+          fi
+
+      - name: Update README after cleanup
+        run: |
+          echo "# 📥 Telegram Downloader" > README.md
+          echo "" >> README.md
+          echo "دانلود خودکار پست‌های تلگرام" >> README.md
+          echo "" >> README.md
+          
+          if [ -d "downloads" ] && [ "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "## 📁 Downloads" >> README.md
+            echo "" >> README.md
+            echo "| # | Post | Size |" >> README.md
+            echo "|---|------|------|" >> README.md
+            
+            COUNTER=1
+            for DIR in downloads/*/; do
+              if [ -d "$DIR" ]; then
+                FOLDER_NAME=$(basename "$DIR")
+                SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
+                echo "| ${COUNTER} | [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) | ${SIZE} |" >> README.md
+                COUNTER=$((COUNTER + 1))
+              fi
+            done
+          fi
+          
+          echo "" >> README.md
+          echo "---" >> README.md
+          echo "*Created by [avasam.ir](https://avasam.ir)*" >> README.md
+          echo "✅ README.md updated"
+
+      - name: Show disk space after cleanup
+        run: |
+          echo ""
+          echo "📊 Disk space after cleanup:"
+          df -h /
+          echo ""
+          echo "📁 Remaining folders in downloads:"
+          if [ -d "downloads" ]; then
+            ls -la downloads/
+          else
+            echo "downloads folder does not exist"
+          fi
+
+      - name: Commit and push changes
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          
+          git add -A
+          
+          if ! git diff --cached --quiet; then
+            TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+            MODE="${{ github.event.inputs.clean_mode }}"
+            git commit -m "🧹 Cleanup: $MODE - $TIMESTAMP [skip ci]"
+            
+            for i in 1 2 3 4 5; do
+              echo "Push attempt $i/5..."
+              if git push origin HEAD:"$BRANCH" 2>&1; then
+                echo "✅ Push successful!"
+                break
+              else
+                echo "Push failed, retrying..."
+                sleep 5
+                git pull --rebase origin "$BRANCH" 2>/dev/null || true
+              fi
+            done
+          else
+            echo "No changes to commit"
+          fi
+          
+          echo ""
+          echo "=========================================="
+          echo "✅ Cleanup completed successfully!"
+          echo "=========================================="
