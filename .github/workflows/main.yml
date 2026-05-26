@@ -213,7 +213,7 @@ jobs:
             ls -la "$DIR"
           done
 
-      - name: Incremental Commit & Push (Batch by Batch)
+      - name: Incremental Commit & Push (Optimized Batch)
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           BACKUP_DIR=$(cat /tmp/backup_dir_path.txt)
@@ -257,16 +257,27 @@ jobs:
             echo "📄 Total files in $FOLDER_NAME: $TOTAL_FILES"
             echo "📊 Total size: $(du -sh "$FOLDER" | cut -f1)"
             
-            # Push files in batches of 3
-            BATCH_SIZE=3
+            # Calculate optimal batch size (max 1.5 GB per batch = about 33 files of 45MB)
+            MAX_BATCH_MB=1500
+            FILES_PER_BATCH=$((MAX_BATCH_MB / 45))  # حدود 33 فایل
+            BATCH_SIZE=$FILES_PER_BATCH
+            
+            echo "📦 Optimal batch size: $BATCH_SIZE files (~$((BATCH_SIZE * 45)) MB)"
+            
+            # Push files in optimized batches
             for ((i=0; i<TOTAL_FILES; i+=BATCH_SIZE)); do
               BATCH_END=$((i + BATCH_SIZE))
               if [ $BATCH_END -gt $TOTAL_FILES ]; then
                 BATCH_END=$TOTAL_FILES
               fi
               
+              BATCH_FILE_COUNT=$((BATCH_END - i))
+              BATCH_SIZE_MB=$((BATCH_FILE_COUNT * 45))
+              
               echo ""
-              echo "  📤 Pushing batch $((i/BATCH_SIZE + 1)) (files $((i+1)) to $BATCH_END) of $FOLDER_NAME"
+              echo "  📤 Pushing batch $((i/BATCH_SIZE + 1)) of $FOLDER_NAME"
+              echo "     Files: $((i+1)) to $BATCH_END of $TOTAL_FILES"
+              echo "     Size: ~${BATCH_SIZE_MB} MB ($BATCH_FILE_COUNT files)"
               
               # Git fetch and reset to latest
               git fetch origin "$BRANCH" --quiet 2>/dev/null || true
@@ -279,24 +290,18 @@ jobs:
               fi
               
               # Add files in this batch
-              BATCH_SIZE_BYTES=0
               for ((j=i; j<BATCH_END; j++)); do
                 FILE_NAME="${FILES[$j]}"
                 if [ -f "downloads/$FOLDER_NAME/$FILE_NAME" ]; then
                   git add -f "downloads/$FOLDER_NAME/$FILE_NAME"
-                  FILE_SIZE=$(stat -c%s "downloads/$FOLDER_NAME/$FILE_NAME" 2>/dev/null || echo 0)
-                  BATCH_SIZE_BYTES=$((BATCH_SIZE_BYTES + FILE_SIZE))
                   echo "    ✅ Added: $FILE_NAME"
                 fi
               done
               
-              # Add README.md if not already added
+              # Add README.md
               if [ -f "downloads/$FOLDER_NAME/README.md" ]; then
                 git add -f "downloads/$FOLDER_NAME/README.md"
               fi
-              
-              BATCH_SIZE_MB=$((BATCH_SIZE_BYTES / 1024 / 1024))
-              echo "    📦 Batch size: ${BATCH_SIZE_MB} MB"
               
               # Update root README
               echo "# 📥 Telegram Downloader" > README.md
@@ -322,39 +327,30 @@ jobs:
               
               git add README.md
               
-              # Commit this batch
+              # Commit and push
               if ! git diff --cached --quiet; then
                 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-                git commit -m "Add $FOLDER_NAME batch $((i/BATCH_SIZE + 1)) (files $((i+1))-$BATCH_END) - $TIMESTAMP [skip ci]"
+                git commit -m "Add $FOLDER_NAME batch $((i/BATCH_SIZE + 1)) ($BATCH_FILE_COUNT files) - $TIMESTAMP [skip ci]"
                 
                 # Push with retry
-                for attempt in 1 2 3 4 5; do
-                  echo "    Push attempt $attempt/5..."
+                for attempt in 1 2 3; do
+                  echo "    Push attempt $attempt/3..."
                   if git push origin HEAD:"$BRANCH" 2>&1; then
                     echo "    ✅ Batch pushed successfully!"
                     break
                   else
-                    WAIT_TIME=$((15 * attempt))
-                    echo "    Push failed, waiting ${WAIT_TIME} seconds before retry..."
-                    sleep $WAIT_TIME
+                    echo "    Push failed, waiting 30 seconds..."
+                    sleep 30
                     git pull --rebase origin "$BRANCH" 2>/dev/null || true
                   fi
                 done
-              else
-                echo "    ℹ️ No changes to commit"
               fi
               
-              # Wait between batches
-              if [ $((i + BATCH_SIZE)) -lt $TOTAL_FILES ]; then
-                echo "    Waiting 10 seconds before next batch..."
-                sleep 10
-              fi
+              # Short wait between batches
+              sleep 5
             done
             
             echo "  ✅ Folder $FOLDER_NAME completed!"
-            
-            # Wait between folders
-            sleep 5
           done
           
           echo ""
