@@ -255,20 +255,36 @@ jobs:
             echo "📤 Pushing batch $((i/BATCH_SIZE + 1)) (folders $((i+1)) to $BATCH_END)"
             echo "=========================================="
             
-            # Git fetch and reset to latest
-            git fetch origin "$BRANCH" --quiet 2>/dev/null || true
+            # Git fetch and reset to latest with retry
+            for retry in 1 2 3; do
+              git fetch origin "$BRANCH" --quiet 2>/dev/null && break
+              echo "  Fetch failed, retry $retry/3..."
+              sleep 5
+            done
             git reset --hard origin/"$BRANCH" 2>/dev/null || true
             
-            # Copy all folders to downloads (to ensure we have all)
+            # Copy all folders to downloads
             if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
               for FOLDER in "$BACKUP_DIR"/*; do
                 if [ -d "$FOLDER" ]; then
-                  FOLDER_NAME=$(basename "$FOLDER")
-                  rm -rf "downloads/$FOLDER_NAME"
-                  cp -r "$FOLDER" "downloads/$FOLDER_NAME"
+                  FN=$(basename "$FOLDER")
+                  rm -rf "downloads/$FN"
+                  cp -r "$FOLDER" "downloads/$FN"
                 fi
               done
             fi
+            
+            # Calculate batch size
+            BATCH_SIZE_BYTES=0
+            for ((j=i; j<BATCH_END; j++)); do
+              FOLDER_NAME="${FOLDERS[$j]}"
+              if [ -d "downloads/$FOLDER_NAME" ]; then
+                FOLDER_SIZE=$(du -sb "downloads/$FOLDER_NAME" 2>/dev/null | cut -f1)
+                BATCH_SIZE_BYTES=$((BATCH_SIZE_BYTES + FOLDER_SIZE))
+              fi
+            done
+            BATCH_SIZE_MB=$((BATCH_SIZE_BYTES / 1024 / 1024))
+            echo "📊 Batch total size: ${BATCH_SIZE_MB} MB"
             
             # Add files in this batch
             for ((j=i; j<BATCH_END; j++)); do
@@ -292,9 +308,9 @@ jobs:
             COUNTER=1
             for DIR in downloads/*/; do
               if [ -d "$DIR" ]; then
-                FOLDER_NAME=$(basename "$DIR")
-                SIZE=$(du -sh "$DIR" 2>/dev/null | cut -f1)
-                echo "| ${COUNTER} | [${FOLDER_NAME}](./downloads/${FOLDER_NAME}/) | ${SIZE} |" >> README.md
+                FN=$(basename "$DIR")
+                SZ=$(du -sh "$DIR" 2>/dev/null | cut -f1)
+                echo "| ${COUNTER} | [${FN}](./downloads/${FN}/) | ${SZ} |" >> README.md
                 COUNTER=$((COUNTER + 1))
               fi
             done
@@ -310,15 +326,16 @@ jobs:
               TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
               git commit -m "Add batch $((i/BATCH_SIZE + 1)): folders $((i+1))-$BATCH_END - $TIMESTAMP [skip ci]"
               
-              # Push with retry
+              # Push with retry and exponential backoff
               for attempt in 1 2 3 4 5; do
                 echo "  Push attempt $attempt/5..."
                 if git push origin HEAD:"$BRANCH" 2>&1; then
                   echo "  ✅ Batch pushed successfully!"
                   break
                 else
-                  echo "  Push failed, retrying..."
-                  sleep 10
+                  WAIT_TIME=$((10 * attempt))
+                  echo "  Push failed, waiting ${WAIT_TIME} seconds before retry..."
+                  sleep $WAIT_TIME
                   git pull --rebase origin "$BRANCH" 2>/dev/null || true
                   git add -f downloads/
                   git add README.md
@@ -328,8 +345,9 @@ jobs:
               echo "  ℹ️ No changes in this batch"
             fi
             
-            # Wait a bit between batches
-            sleep 5
+            # Wait between batches
+            echo "  Waiting 15 seconds before next batch..."
+            sleep 15
           done
           
           echo ""
@@ -337,7 +355,8 @@ jobs:
           ls -la downloads/
           for DIR in downloads/*/; do
             echo "Contents of $(basename "$DIR"):"
-            ls -la "$DIR" | head -10
+            ls -la "$DIR" | wc -l
+            echo "  Total files: $(ls -1 "$DIR" | wc -l)"
           done
           
           echo ""
