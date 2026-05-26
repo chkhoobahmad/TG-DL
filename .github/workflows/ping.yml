@@ -1,0 +1,19 @@
+name: Ping IP Address
+
+on:
+  workflow_dispatch:  # اجرای دستی از طریق دکمه Run workflow در گیت‌هاب
+
+jobs:
+  ping-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping 46.100.106.41
+        run: |
+          echo "Pinging 46.100.106.41..."
+          # 4 بار پینگ با timeout 3 ثانیه برای هر درخواست
+          if ping -c 4 -W 3 46.100.106.41; then
+            echo "✅ Ping successful! IP is reachable."
+          else
+            echo "❌ Ping failed! IP is not reachable or timeout."
+            exit 1  # اختیاری: اگر می‌خواهید در صورت失敗، خروجی خطا بدهد
+          fi
